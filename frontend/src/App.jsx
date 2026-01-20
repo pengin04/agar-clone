@@ -25,12 +25,20 @@ const GAME_CONSTANTS = {
 };
 
 const getServerURL = () => {
+  // ✅ Vercel本番はここが最優先（ViteはVITE_ が必要）
+  const envUrl = import.meta.env.VITE_SOCKET_URL;
+  if (envUrl) return envUrl;
+
+  // ローカル開発
   const hostname = window.location.hostname;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return "http://localhost:8080";
   }
+
+  // （必要なら残す：同一LAN等での直叩き用）
   return `http://${hostname}:8080`;
 };
+
 
 // 🎯 UIToggleButton
 const UIToggleButton = ({ showUI, onToggle }) => {
