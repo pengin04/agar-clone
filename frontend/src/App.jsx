@@ -27,10 +27,17 @@ const GAME_CONSTANTS = {
 };
 
 const getServerURL = () => {
+  // ✅ 本番(Vercel)は Render の URL をここから読む
+  const envUrl = import.meta.env.VITE_SOCKET_URL;
+  if (envUrl) return envUrl;
+
+  // ローカル開発
   const hostname = window.location.hostname;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return "http://localhost:8080";
   }
+
+  // （必要なら残す：LAN直叩き用）
   return `http://${hostname}:8080`;
 };
 
