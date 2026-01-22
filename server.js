@@ -53,17 +53,17 @@ const GAME_CONSTANTS = {
     VIRUS_MIN_INTERACTION_MASS: 120,
     VIRUS_BONUS_MASS: 100,
 
-    SHOP_GUN_PRICE: 100,
-    SHOP_GUN_DURATION: 30000,
-    SHOP_GUN_BULLETS: 10,
-
+    // 🦠 ウイルス自動スポーン設定
+    VIRUS_MAX_COUNT: 15,              // 最大15個まで
+    VIRUS_SPAWN_INTERVAL: 30000,      // 30秒ごと（1分に2個）
+    VIRUS_SPAWN_PER_INTERVAL: 1,      // 1回につき1個
 
     MASS_TO_RADIUS: (mass) => Math.sqrt(mass / Math.PI) * 1.2,
     RADIUS_TO_MASS: (radius) => Math.PI * radius * radius,
 
     SPEED_FORMULA: (mass) => {
-        const baseSpeed = 86 / Math.pow(mass, 0.449);
-        return Math.max(baseSpeed, 20);
+        const baseSpeed = 60 / Math.pow(mass, 0.4);
+        return Math.max(baseSpeed, 8);
     },
 
     SPLIT_MIN_MASS: 35,
@@ -98,13 +98,65 @@ const GAME_CONSTANTS = {
     LEADERBOARD_UPDATE_RATE: 1000,
     FOOD_RESPAWN_RATE: 5,
 
-    GUN_ITEM_SPAWN_INTERVAL: 60000,  // 1分ごと
+    GUN_ITEM_SPAWN_INTERVAL: 45000,  // 45秒ごと
+    GUN_ITEM_MAX_COUNT: 6,
     GUN_BULLET_DAMAGE: 100,           // 弾のダメージ（質量減少量）
     GUN_BULLET_SPEED: 800,            // 弾の速度
     GUN_BULLET_RADIUS: 4,             // 弾の半径
     GUN_COOLDOWN: 500,                // 射撃クールダウン（0.5秒）
-    GUN_MAX_BULLETS: 5,              // 最大弾数
+    GUN_MAX_BULLETS: 10,             // 🎯 最大10発に変更
+    GUN_BULLETS_PER_ITEM: 5,         // 🎯 新規追加：1個につき5発
+
+
+    // 🛡️ バリアアイテム
+    BARRIER_ITEM_SPAWN_INTERVAL: 60000,  // 1分ごと
+    BARRIER_ITEM_MAX_COUNT: 3,           // 最大3個
+    BARRIER_DURATION: 10000,             // 10秒間無敵
+
+
+    // 👟 スピードアップアイテム
+    SPEEDUP_ITEM_SPAWN_INTERVAL: 45000,  // 45秒ごと
+    SPEEDUP_ITEM_MAX_COUNT: 3,           // 最大3個
+    SPEEDUP_DURATION: 5000,              // 5秒間
+    SPEEDUP_MULTIPLIER: 2.0,             // スピード2倍
+
+    // ===== 🛍️ SHOP（追加）=====
+    SHOP_GUN_PRICE: 100,
+    SHOP_GUN_DURATION: 30000,
+    SHOP_GUN_BULLETS: 5,
+    SHOP_MIN_MASS_TO_BUY: 150,
+
+    SHOP_BARRIER_PRICE: 120,
+    // バリアは「購入＝所持(未発動)」なので duration は activate_barrier 側で使う。
+    // 既存に BARRIER_DURATION があるならそれを使ってもOK
+    SHOP_BARRIER_DURATION: 10000,
+
 };
+
+// ===== 🛍️ SHOP HELPERS（追加）=====
+function getTotalMass(player) {
+    if (!player?.cells?.length) return 0;
+    return player.cells.reduce((sum, cell) => sum + (cell.mass || 0), 0);
+}
+
+// 価格分をプレイヤーのセルから減算（最低10は残す：参考コードの挙動に合わせる）
+function removeMassForPurchase(player, price) {
+    let remaining = price;
+
+    for (const cell of player.cells) {
+        if (remaining <= 0) break;
+
+        const canTake = (cell.mass || 0) - 10;
+        if (canTake <= 0) continue;
+
+        const take = Math.min(canTake, remaining);
+        cell.setMass(cell.mass - take);
+        remaining -= take;
+    }
+
+    return remaining <= 0;
+}
+
 
 class QuadTree {
     constructor(x, y, width, height, maxObjects = 15, maxLevels = 6, level = 0) {
@@ -346,7 +398,7 @@ class PlayerCell extends GameObject {
         return skins[skinIndex];
     }
 
-    update(deltaTime) {
+    update(deltaTime, player) {
         super.update(deltaTime);
 
         if (this.protectionTime > 0) {
@@ -389,81 +441,24 @@ class PlayerCell extends GameObject {
             this.setMass(Math.max(GAME_CONSTANTS.DECAY_MIN_MASS, this.mass - decayAmount));
         }
 
-        this.moveTowards(this.targetX, this.targetY, deltaTime);
+
+
+        this.moveTowards(this.targetX, this.targetY, deltaTime, player);
 
         this.maxSpeed = GAME_CONSTANTS.SPEED_FORMULA(this.mass);
     }
 
-    handleBuyGun(socketId) {
-        const player = this.players.get(socketId);
-        if (!player || !player.cells || player.cells.length === 0) {
-            return { success: false, message: "プレイヤーが見つかりません" };
-        }
-
-        if (player.hasGun) {
-            return { success: false, message: "既に銃を装備しています" };
-        }
-
-        const totalMass = player.cells.reduce((sum, cell) => sum + cell.mass, 0);
-
-        if (totalMass < GAME_CONSTANTS.SHOP_GUN_PRICE) {
-            return {
-                success: false,
-                message: "質量が足りません（必要: " + GAME_CONSTANTS.SHOP_GUN_PRICE + ", 現在: " + Math.floor(totalMass) + "）"
-            };
-        }
-
-        const massToRemove = GAME_CONSTANTS.SHOP_GUN_PRICE;
-        let remainingMassToRemove = massToRemove;
-
-        for (const cell of player.cells) {
-            if (remainingMassToRemove <= 0) break;
-
-            const massToTake = Math.min(cell.mass - 10, remainingMassToRemove);
-            if (massToTake > 0) {
-                cell.setMass(cell.mass - massToTake);
-                remainingMassToRemove -= massToTake;
-            }
-        }
-
-        player.hasGun = true;
-        player.gunAcquiredTime = Date.now();
-        player.gunBullets = GAME_CONSTANTS.SHOP_GUN_BULLETS;
-        player.lastGunShot = 0;
-
-        console.log("🛍️ " + player.name + " bought a gun for " + GAME_CONSTANTS.SHOP_GUN_PRICE + " mass!");
-
-        const socket = Array.from(io.sockets.sockets.values())
-            .find(s => s.id === player.id);
-        if (socket) {
-            socket.emit('gun_acquired', {
-                duration: GAME_CONSTANTS.SHOP_GUN_DURATION,
-                bullets: player.gunBullets,
-                source: 'shop'
-            });
-        }
-
-        io.emit('player_bought_gun', {
-            playerId: player.id,
-            playerName: player.name
-        });
-
-        return {
-            success: true,
-            message: "銃を購入しました！（弾数: " + player.gunBullets + "）",
-            bulletsLeft: player.gunBullets,
-            duration: GAME_CONSTANTS.SHOP_GUN_DURATION
-        };
-    }
-
-    moveTowards(x, y, deltaTime) {
+    moveTowards(x, y, deltaTime, player) {
         const dx = x - this.x;
         const dy = y - this.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance > 3) {
             const baseSpeed = this.maxSpeed;
-            const moveSpeed = baseSpeed * (deltaTime / 1000) * 1.0;
+
+            // 👟 スピードアップ中は2倍速
+            const speedMultiplier = (this.speedUpActive) ? GAME_CONSTANTS.SPEEDUP_MULTIPLIER : 1.0;
+            const moveSpeed = baseSpeed * (deltaTime / 1000) * speedMultiplier;
             const actualMove = Math.min(moveSpeed, distance * 0.25);
 
             const directionX = dx / distance;
@@ -675,6 +670,12 @@ class EjectedMass extends GameObject {
         if (Math.abs(this.vx) < 10 && Math.abs(this.vy) < 10) {
             this.vx = 0;
             this.vy = 0;
+        }
+
+        // 🎯 速度が停止したら消滅
+        if (Math.abs(this.vx) < 10 && Math.abs(this.vy) < 10) {
+            this.toDelete = true;
+            console.log('🔫 Bullet stopped and deleted');
         }
 
         this.life -= deltaTime;
@@ -905,6 +906,8 @@ class GunItem extends GameObject {
     }
 }
 
+
+
 // 3. Bullet クラスを追加（GunItem クラスの後に追加）
 class Bullet extends GameObject {
     constructor(x, y, angle, shooterId) {
@@ -925,10 +928,61 @@ class Bullet extends GameObject {
     update(deltaTime) {
         super.update(deltaTime);
 
+        // 🎯 EjectedMass と同じ摩擦処理を追加
+        const friction = 0.80;
+        this.vx *= friction;
+        this.vy *= friction;
+
+        // 🎯 速度が遅くなったら0にする
+        if (Math.abs(this.vx) < 10 && Math.abs(this.vy) < 10) {
+            this.vx = 0;
+            this.vy = 0;
+            // 🎯 停止したら即座に削除
+            this.toDelete = true;
+            console.log('🔫 Bullet stopped and deleted at position:', this.x, this.y);
+        }
+
         this.life -= deltaTime;
         if (this.life <= 0) {
             this.toDelete = true;
         }
+    }
+}
+
+// 🛡️ BarrierItem クラス
+class BarrierItem extends GameObject {
+    constructor(x, y) {
+        super(x, y, 50, 'barrierItem');  // mass 50, type 'barrierItem'
+        this.color = '#00BFFF';  // 水色
+        this.icon = '🛡️';
+        this.pulsePhase = Math.random() * Math.PI * 2;
+        this.rotation = 0;
+        this.rotationSpeed = 0.02;
+    }
+
+
+    update(deltaTime) {
+        super.update(deltaTime);
+        this.rotation += this.rotationSpeed * deltaTime * 0.001;
+        this.pulsePhase += deltaTime * 0.003;
+    }
+}
+
+// 👟 SpeedUpItem クラス
+class SpeedUpItem extends GameObject {
+    constructor(x, y) {
+        super(x, y, 50, 'speedUpItem');  // mass 50, type 'speedUpItem'
+        this.color = '#FF1493';  // ピンク色
+        this.icon = '👟';
+        this.pulsePhase = Math.random() * Math.PI * 2;
+        this.rotation = 0;
+        this.rotationSpeed = 0.02;
+    }
+
+    update(deltaTime) {
+        super.update(deltaTime);
+        this.rotation += this.rotationSpeed * deltaTime * 0.001;
+        this.pulsePhase += deltaTime * 0.003;
     }
 }
 
@@ -953,6 +1007,17 @@ class EnhancedAgarServer {
         this.bullets = new Map();
         this.lastGunItemSpawn = Date.now();
 
+        // 🛡️ バリアアイテム関連
+        this.barrierItems = new Map();
+        this.lastBarrierItemSpawn = Date.now();
+
+        // 👟 スピードアップアイテム関連
+        this.speedUpItems = new Map();
+        this.lastSpeedUpItemSpawn = Date.now();
+
+        // 🦠 ウイルス自動スポーン関連
+        this.lastVirusSpawn = Date.now();
+
         this.stats = {
             updateTime: 0,
             collisionTime: 0,
@@ -968,7 +1033,11 @@ class EnhancedAgarServer {
             chatMessagesCount: 0,
             gunItemsCount: 0,
             bulletsCount: 0,
-            playersWithGun: 0
+            playersWithGun: 0,
+            barrierItemsCount: 0,
+            playersWithBarrier: 0,
+            speedUpItemsCount: 0,
+            playersWithSpeedUp: 0
 
         };
 
@@ -1043,7 +1112,7 @@ class EnhancedAgarServer {
 
         return virus;
     }
-    // 5. createGunItem メソッドを追加（createVirus の後に追加）
+    // 5. createGunItem メソッドを追加（createVirus の後に追加）F
     createGunItem() {
         const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 200) + 100;
         const y = Math.random() * (GAME_CONSTANTS.WORLD_HEIGHT - 200) + 100;
@@ -1055,6 +1124,129 @@ class EnhancedAgarServer {
         console.log(`🔫 Gun item spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
         return gunItem;
     }
+
+    // 🛡️ createBarrierItem メソッド
+    createBarrierItem() {
+        const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 200) + 100;
+        const y = Math.random() * (GAME_CONSTANTS.WORLD_HEIGHT - 200) + 100;
+
+        const barrierItem = new BarrierItem(x, y);
+        this.barrierItems.set(barrierItem.id, barrierItem);
+        this.gameObjects.set(barrierItem.id, barrierItem);
+
+        console.log(`🛡️ Barrier item spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+        return barrierItem;
+    }
+
+    // 👟 createSpeedUpItem メソッド
+    createSpeedUpItem() {
+        const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 200) + 100;
+        const y = Math.random() * (GAME_CONSTANTS.WORLD_HEIGHT - 200) + 100;
+
+        const speedUpItem = new SpeedUpItem(x, y);
+        this.speedUpItems.set(speedUpItem.id, speedUpItem);
+        this.gameObjects.set(speedUpItem.id, speedUpItem);
+
+        console.log(`👟 SpeedUp item spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+        return speedUpItem;
+    }
+
+    // ===== 🛍️ SHOP: BUY GUN（追加）=====
+    handleBuyGun(socketId) {
+        const player = this.players.get(socketId);
+        if (!player?.cells?.length) {
+            return { success: false, message: "プレイヤーが見つかりません" };
+        }
+
+        if (player.hasGun) {
+            return { success: false, message: "既に銃を装備しています" };
+        }
+
+        const totalMass = getTotalMass(player);
+        if (totalMass < GAME_CONSTANTS.SHOP_MIN_MASS_TO_BUY) {
+            return {
+                success: false,
+                message: `質量が足りません (必要: ${GAME_CONSTANTS.SHOP_MIN_MASS_TO_BUY}, 現在: ${Math.floor(totalMass)})`
+            };
+        }
+
+        const paid = removeMassForPurchase(player, GAME_CONSTANTS.SHOP_GUN_PRICE);
+        if (!paid) {
+            return { success: false, message: "購入処理に失敗しました（質量減算不可）" };
+        }
+
+        player.hasGun = true;
+        player.gunAcquiredTime = Date.now();
+        player.gunBullets = GAME_CONSTANTS.SHOP_GUN_BULLETS;
+        player.lastGunShot = 0;
+
+        // 購入者へ：既存クライアントが gun_acquired を持っているなら送る（UI即反映）
+        const sock = Array.from(io.sockets.sockets.values()).find(s => s.id === player.id);
+        if (sock) {
+            sock.emit("gun_acquired", {
+                duration: GAME_CONSTANTS.SHOP_GUN_DURATION,
+                bullets: player.gunBullets,
+                source: "shop"
+            });
+        }
+
+        // 全体通知
+        io.emit("player_bought_gun", { playerId: player.id, playerName: player.name });
+
+        return {
+            success: true,
+            message: `銃を購入しました！（弾数: ${player.gunBullets}）`,
+            bulletsLeft: player.gunBullets,
+            duration: GAME_CONSTANTS.SHOP_GUN_DURATION
+        };
+    }
+
+    // ===== 🛍️ SHOP: BUY BARRIER（追加）=====
+    handleBuyBarrier(socketId) {
+        const player = this.players.get(socketId);
+        if (!player?.cells?.length) {
+            return { success: false, message: "プレイヤーが見つかりません" };
+        }
+
+        if (player.hasBarrier || player.barrierActive) {
+            return { success: false, message: "既にバリアを所持/発動しています" };
+        }
+
+        const totalMass = getTotalMass(player);
+        if (totalMass < GAME_CONSTANTS.SHOP_BARRIER_PRICE) {
+            return {
+                success: false,
+                message: `質量が足りません（必要: ${GAME_CONSTANTS.SHOP_BARRIER_PRICE}, 現在: ${Math.floor(totalMass)}）`
+            };
+        }
+
+        const paid = removeMassForPurchase(player, GAME_CONSTANTS.SHOP_BARRIER_PRICE);
+        if (!paid) {
+            return { success: false, message: "購入処理に失敗しました（質量減算不可）" };
+        }
+
+        // ✅ 購入＝所持（未発動）
+        player.hasBarrier = true;
+        player.barrierActive = false;
+        player.barrierActivatedTime = 0;
+
+        // 購入者へ：既存クライアントの barrier_acquired があるなら送る（UI即反映）
+        const sock = Array.from(io.sockets.sockets.values()).find(s => s.id === player.id);
+        if (sock) {
+            sock.emit("barrier_acquired", { source: "shop" });
+        }
+
+        // 全体通知（イベント名は指定通り）
+        io.emit("player_bought_barrier", { playerId: player.id, playerName: player.name });
+
+        return {
+            success: true,
+            message: "バリアを購入しました！（未発動）"
+        };
+    }
+
+
+
 
     addPlayer(socketId, name) {
         const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 400) + 200;
@@ -1071,12 +1263,11 @@ class EnhancedAgarServer {
             lastEjectTime: 0,
             skin: playerCell.skin,
             virusRiskRewards: 0,
+            // ===== 🛡️ BARRIER STATE（追加）=====
+            hasBarrier: false,
+            barrierActive: false,
+            barrierActivatedTime: 0,
 
-            // 🔫 銃関連のプロパティを追加（👈 この4行を追加）
-            hasGun: false,
-            gunAcquiredTime: 0,
-            gunBullets: 0,
-            lastGunShot: 0
         };
 
         this.players.set(socketId, player);
@@ -1123,82 +1314,6 @@ class EnhancedAgarServer {
             console.log(`❌ ${player.name} left the game`);
         }
     }
-
-    // 🛍️ ここに handleBuyGun を追加（👈 この位置）
-    handleBuyGun(socketId) {
-        console.log(`🛍️ Buy gun request from: ${socketId}`);
-
-        const player = this.players.get(socketId);
-        console.log(`🛍️ Player found:`, player ? 'YES' : 'NO');
-
-        if (!player || !player.cells || player.cells.length === 0) {
-            console.log(`❌ Player not found or no cells`);
-            return { success: false, message: "プレイヤーが見つかりません" };
-        }
-
-        console.log(`🛍️ Player hasGun:`, player.hasGun);
-        if (player.hasGun) {
-            return { success: false, message: "既に銃を装備しています" };
-        }
-
-        const totalMass = player.cells.reduce((sum, cell) => sum + cell.mass, 0);
-        console.log(`🛍️ Total mass: ${totalMass}, Required: ${GAME_CONSTANTS.SHOP_GUN_PRICE}`);
-
-        if (totalMass < GAME_CONSTANTS.SHOP_GUN_PRICE) {
-            return {
-                success: false,
-                message: `質量が足りません（必要: ${GAME_CONSTANTS.SHOP_GUN_PRICE}, 現在: ${Math.floor(totalMass)}）`
-            };
-        }
-
-        // 質量を減らす
-        const massToRemove = GAME_CONSTANTS.SHOP_GUN_PRICE;
-        let remainingMassToRemove = massToRemove;
-
-        for (const cell of player.cells) {
-            if (remainingMassToRemove <= 0) break;
-
-            const massToTake = Math.min(cell.mass - 10, remainingMassToRemove);
-            if (massToTake > 0) {
-                cell.setMass(cell.mass - massToTake);
-                remainingMassToRemove -= massToTake;
-            }
-        }
-
-        // 銃を付与
-        player.hasGun = true;
-        player.gunAcquiredTime = Date.now();
-        player.gunBullets = GAME_CONSTANTS.SHOP_GUN_BULLETS;
-        player.lastGunShot = 0;
-
-        console.log(`🛍️✅ ${player.name} bought a gun! Bullets: ${player.gunBullets}`);
-
-        // クライアントに通知
-        const socket = Array.from(io.sockets.sockets.values())
-            .find(s => s.id === player.id);
-        if (socket) {
-            socket.emit('gun_acquired', {
-                duration: GAME_CONSTANTS.SHOP_GUN_DURATION,
-                bullets: player.gunBullets,
-                source: 'shop'
-            });
-        }
-
-        // 全体に通知
-        io.emit('player_bought_gun', {
-            playerId: player.id,
-            playerName: player.name
-        });
-
-        return {
-            success: true,
-            message: `銃を購入しました！（弾数: ${player.gunBullets}）`,
-            bulletsLeft: player.gunBullets,
-            duration: GAME_CONSTANTS.SHOP_GUN_DURATION
-        };
-    }
-
-
     removePlayerByBullet(playerId, killerName) {
         const player = this.players.get(playerId);
         if (!player) return;
@@ -1332,6 +1447,7 @@ class EnhancedAgarServer {
         }
 
         for (const cell of player.cells) {
+            cell.update(deltaTime, player);  // 👟 player を渡す
             if (ejectedCount >= 1) break;
 
             if (cell.mass >= GAME_CONSTANTS.EJECT_MIN_MASS) {
@@ -1369,6 +1485,7 @@ class EnhancedAgarServer {
         if (!player || !player.hasGun || !player.cells[0]) {
             return false;
         }
+
         const now = Date.now();
 
         // クールダウンチェック
@@ -1378,34 +1495,113 @@ class EnhancedAgarServer {
 
         // 弾数チェック
         if (player.gunBullets <= 0) {
+            // 🎯 弾数が0になったら銃を失う
+            player.hasGun = false;
+            player.gunBullets = 0;
+
+            const socket = Array.from(io.sockets.sockets.values())
+                .find(s => s.id === socketId);
+            if (socket) {
+                socket.emit('gun_expired');
+            }
+
+            console.log(`🔫 ${player.name}'s gun ran out of bullets`);
             return false;
         }
 
-        const mainCell = player.cells[0];
-        const mouseX = data.mouseX || data.x || mainCell.x + 100;
-        const mouseY = data.mouseY || data.y || mainCell.y;
-
-        // 弾の発射角度計算
-        const dx = mouseX - mainCell.x;
-        const dy = mouseY - mainCell.y;
+        const cell = player.cells[0];
+        const dx = data.mouseX - cell.x;
+        const dy = data.mouseY - cell.y;
         const angle = Math.atan2(dy, dx);
 
         // 弾を生成
-        const bulletX = mainCell.x + Math.cos(angle) * (mainCell.radius + 20);
-        const bulletY = mainCell.y + Math.sin(angle) * (mainCell.radius + 20);
-
+        const bulletX = cell.x + Math.cos(angle) * (cell.radius + 10);
+        const bulletY = cell.y + Math.sin(angle) * (cell.radius + 10);
         const bullet = new Bullet(bulletX, bulletY, angle, socketId);
+
         this.bullets.set(bullet.id, bullet);
         this.gameObjects.set(bullet.id, bullet);
 
-        player.lastGunShot = now;
+        // 弾数を減らす
         player.gunBullets--;
+        player.lastGunShot = now;
 
-        console.log(`🔫 ${player.name} shot a bullet (${player.gunBullets} left)`);
+        // クライアントに通知
+        const socket = Array.from(io.sockets.sockets.values())
+            .find(s => s.id === socketId);
+        if (socket) {
+            socket.emit('gun_shot_success', {
+                bulletsLeft: player.gunBullets
+            });
+        }
 
+        // 🎯 弾数が0になったかチェック
+        if (player.gunBullets <= 0) {
+            player.hasGun = false;
+            if (socket) {
+                socket.emit('gun_expired');
+            }
+            console.log(`🔫 ${player.name} used last bullet`);
+        }
+
+        console.log(`🔫 ${player.name} shot! Bullets left: ${player.gunBullets}`);
         return true;
     }
 
+    // 🛡️ バリア発動処理（新規追加）
+    handleBarrierActivate(socketId) {
+        const player = this.players.get(socketId);
+        if (!player) {
+            console.log(`❌ Player not found: ${socketId}`);
+            return false;
+        }
+
+        // バリアを持っていない場合
+        if (!player.hasBarrier) {
+            console.log(`🛡️❌ ${player.name} does not have barrier`);
+            return false;
+        }
+
+        // すでに発動中の場合
+        if (player.barrierActive) {
+            console.log(`🛡️❌ ${player.name}'s barrier is already active`);
+            return false;
+        }
+
+        // ✅ バリアを発動
+        player.barrierActive = true;
+        player.barrierAcquiredTime = Date.now();
+
+        console.log(`🛡️✅ ${player.name} activated barrier! Duration: 10s`);
+
+        const socket = Array.from(io.sockets.sockets.values())
+            .find(s => s.id === player.id);
+        if (socket) {
+            socket.emit('barrier_activated', {
+                duration: GAME_CONSTANTS.BARRIER_DURATION
+            });
+        }
+        // 👟 スピードアップ時間の更新
+        if (player.speedUpActive && player.speedUpTimeLeft > 0) {
+            player.speedUpTimeLeft -= deltaTime;
+            if (player.speedUpTimeLeft <= 0) {
+                player.speedUpActive = false;
+                player.hasSpeedUp = false;
+                player.speedUpTimeLeft = 0;
+
+                const socket = Array.from(io.sockets.sockets.values())
+                    .find(s => s.id === player.id);
+                if (socket) {
+                    socket.emit('speedup_expired');
+                }
+                console.log(`👟 ${player.name}'s speedup expired`);
+            }
+        }
+
+
+
+        return true;
+    }
     // 🎯 チャットメッセージ処理
     handleChatMessage(socketId, data) {
         const player = this.players.get(socketId);
@@ -1450,15 +1646,25 @@ class EnhancedAgarServer {
         const updateStart = Date.now();
         this.gameTime += deltaTime;
 
+
+
         for (const [id, obj] of this.gameObjects) {
             obj.update(deltaTime);
 
             if (obj.toDelete) {
                 this.gameObjects.delete(id);
+
+            }
+        }
+        // 🎯 bullets Map からの削除処理を追加
+        for (const [id, bullet] of this.bullets) {
+            if (bullet.toDelete) {
+                this.bullets.delete(id);
+                console.log('🔫 Bullet cleaned up:', id);
             }
         }
 
-        this.handleSmoothPositioning();
+
 
         const currentFoodCount = Array.from(this.gameObjects.values())
             .filter(obj => obj.type === 'food').length;
@@ -1473,6 +1679,8 @@ class EnhancedAgarServer {
             this.checkCellMerging(player);
         });
 
+        this.handleSmoothPositioning();
+
         this.checkCollisions();
 
         this.checkVirusInteractions();
@@ -1481,31 +1689,95 @@ class EnhancedAgarServer {
             this.updateLeaderboard();
             this.lastLeaderboardUpdate = this.gameTime;
         }
-        // 🔫 銃アイテムのスポーン
+        // 🔫 銃アイテムのスポーン（30秒ごとに6個まで）
         const now = Date.now();
         if (now - this.lastGunItemSpawn >= GAME_CONSTANTS.GUN_ITEM_SPAWN_INTERVAL) {
-            // 既存の銃アイテムが1個未満の場合のみスポーン
-            if (this.gunItems.size < 1) {
+            // 🎯 既存の銃アイテムが2個未満の場合のみスポーン
+            if (this.gunItems.size < GAME_CONSTANTS.GUN_ITEM_MAX_COUNT) {
                 this.createGunItem();
+                console.log(`🔫 Gun item spawned! Total: ${this.gunItems.size}/${GAME_CONSTANTS.GUN_ITEM_MAX_COUNT}`);
             }
             this.lastGunItemSpawn = now;
         }
 
-        // 銃の有効時間チェック
+        // 🛡️ バリアアイテムのスポーン（1分ごとに1個まで）
+        if (now - this.lastBarrierItemSpawn >= GAME_CONSTANTS.BARRIER_ITEM_SPAWN_INTERVAL) {
+            if (this.barrierItems.size < GAME_CONSTANTS.BARRIER_ITEM_MAX_COUNT) {
+                this.createBarrierItem();
+                console.log(`🛡️ Barrier item spawned! Total: ${this.barrierItems.size}/${GAME_CONSTANTS.BARRIER_ITEM_MAX_COUNT}`);
+            }
+            this.lastBarrierItemSpawn = now;
+        }
+
+        // 🛡️ バリアの有効時間チェック（修正版）
         for (const player of this.players.values()) {
-            if (player.hasGun && now - player.gunAcquiredTime >= GAME_CONSTANTS.GUN_ITEM_DURATION) {
-                player.hasGun = false;
-                player.gunBullets = 0;
-                console.log(`🔫 ${player.name}'s gun expired`);
+            // ✅ barrierActiveがtrueの時のみ期限チェック
+            if (player.barrierActive && player.barrierAcquiredTime &&
+                now - player.barrierAcquiredTime >= GAME_CONSTANTS.BARRIER_DURATION) {
+                player.hasBarrier = false;
+                player.barrierActive = false;
+                console.log(`🛡️ ${player.name}'s barrier expired`);
 
                 // クライアントに通知
                 const socket = Array.from(io.sockets.sockets.values())
                     .find(s => s.id === player.id);
                 if (socket) {
-                    socket.emit('gun_expired');
+                    socket.emit('barrier_expired');
                 }
             }
         }
+
+
+        // 👟 スピードアップアイテムのスポーン（45秒ごとに4個まで）
+        if (now - this.lastSpeedUpItemSpawn >= GAME_CONSTANTS.SPEEDUP_ITEM_SPAWN_INTERVAL) {
+            if (this.speedUpItems.size < GAME_CONSTANTS.SPEEDUP_ITEM_MAX_COUNT) {
+                this.createSpeedUpItem();
+                console.log(`👟 SpeedUp item spawned! Total: ${this.speedUpItems.size}/${GAME_CONSTANTS.SPEEDUP_ITEM_MAX_COUNT}`);
+            }
+            this.lastSpeedUpItemSpawn = now;
+        }
+
+        // 🦠 ウイルスの自動スポーン（30秒ごとに15個まで）
+        if (now - this.lastVirusSpawn >= GAME_CONSTANTS.VIRUS_SPAWN_INTERVAL) {
+            if (this.viruses.size < GAME_CONSTANTS.VIRUS_MAX_COUNT) {
+                this.createVirus();
+                console.log(`🦠 Virus auto-spawned! Total: ${this.viruses.size}/${GAME_CONSTANTS.VIRUS_MAX_COUNT}`);
+            }
+            this.lastVirusSpawn = now;
+        }
+
+        // === オブジェクトの更新 ===
+        for (const obj of this.gameObjects.values()) {
+            // ✅ 削除マークされていないオブジェクトのみ更新
+            if (!obj.toDelete) {
+                obj.update(deltaTime);
+            }
+        }
+
+        // === 銃アイテムの更新 ===
+        for (const [id, item] of this.gunItems.entries()) {
+            // ✅ 削除マークされていないアイテムのみ更新
+            if (!item.toDelete) {
+                item.update(deltaTime);
+            }
+        }
+
+        // === バリアアイテムの更新 ===
+        for (const [id, item] of this.barrierItems.entries()) {
+            // ✅ 削除マークされていないアイテムのみ更新
+            if (!item.toDelete) {
+                item.update(deltaTime);
+            }
+        }
+
+        // 👟 スピードアップアイテムの更新
+        for (const [id, item] of this.speedUpItems.entries()) {
+            // ✅ 削除マークされていないアイテムのみ更新
+            if (!item.toDelete) {
+                item.update(deltaTime);
+            }
+        }
+
 
         // 弾の衝突チェック
         this.checkBulletCollisions();
@@ -1520,7 +1792,14 @@ class EnhancedAgarServer {
         this.stats.bulletsCount = this.bullets.size;
         this.stats.playersWithGun = Array.from(this.players.values())
             .filter(p => p.hasGun).length;
+        this.stats.barrierItemsCount = this.barrierItems.size;
+        this.stats.playersWithBarrier = Array.from(this.players.values())
+            .filter(p => p.hasBarrier).length;
 
+        // 👟 スピードアップの統計情報（新規追加）
+        this.stats.speedUpItemsCount = this.speedUpItems.size;
+        this.stats.playersWithSpeedUp = Array.from(this.players.values())
+            .filter(p => p.hasSpeedUp).length;
 
     }
 
@@ -1591,8 +1870,9 @@ class EnhancedAgarServer {
                 }
 
                 if (cell1.canMerge && cell2.canMerge) {
+
                     const distance = cell1.distanceTo(cell2);
-                    const mergeDistance = (cell1.radius + cell2.radius) * 0.6;
+                    const mergeDistance = (cell1.radius + cell2.radius) * 1.2;
 
                     if (distance < mergeDistance) {
                         if (cell1.mass >= cell2.mass) {
@@ -1607,7 +1887,9 @@ class EnhancedAgarServer {
                         console.log(`🔗 ${player.name} merged cells: ${player.cells.length} cells remaining`);
                         break;
                     }
+                    continue;
                 }
+
             }
         }
     }
@@ -1648,8 +1930,89 @@ class EnhancedAgarServer {
             }
         }
 
+        // プレイヤー同士の衝突
+        for (const predator of this.players.values()) {
+            if (!predator.alive || !predator.cells.length) continue;
+
+            for (let i = 0; i < predator.cells.length; i++) {
+                const predatorCell = predator.cells[i];
+
+                for (const prey of this.players.values()) {
+                    if (predator.id === prey.id || !prey.alive || !prey.cells.length) continue;
+
+                    // 🛡️ どちらかがバリアを持っている場合は衝突判定をスキップ
+                    if (predator.hasBarrier || prey.hasBarrier) {
+                        continue;
+                    }
+
+                    for (let j = prey.cells.length - 1; j >= 0; j--) {
+                        const preyCell = prey.cells[j];
+
+
+                    }
+                }
+            }
+        }
+        // ✅ 削除予定のオブジェクトを除外してQuadTreeに挿入
+        for (const obj of this.gameObjects.values()) {
+            if (!obj.toDelete && obj.type !== 'bullet') {  // 弾は別処理
+                this.quadTree.insert(obj);
+            }
+        }
+
+        // プレイヤーセルの衝突チェック
+        for (const player of this.players.values()) {
+            for (const cell of player.cells) {
+                // ✅ 削除予定のセルはスキップ
+                if (cell.toDelete) continue;
+
+                const nearbyObjects = [];
+                this.quadTree.retrieve(nearbyObjects, cell);
+
+                for (const other of nearbyObjects) {
+                    // ✅ 既に削除マークされているオブジェクトはスキップ
+                    if (other.toDelete) continue;
+
+                    // 自分自身との衝突はスキップ
+                    if (other.id === cell.id) continue;
+
+                    // 同じプレイヤーのセル同士はスキップ
+                    if (other.type === 'player' && other.playerId === cell.playerId) {
+                        continue;
+                    }
+
+                    // 衝突判定
+                    if (cell.collidesWith(other)) {
+                        this.processCollision(cell, other);
+                    }
+                }
+            }
+        }
+
+        // ✅ 削除マークされたオブジェクトを実際に削除
+        for (const [id, obj] of this.gameObjects.entries()) {
+            if (obj.toDelete) {
+                this.gameObjects.delete(id);
+
+                // 各種マップからも削除
+                if (obj.type === 'gunItem') {
+                    this.gunItems.delete(id);
+                } else if (obj.type === 'barrierItem') {
+                    this.barrierItems.delete(id);
+                } else if (obj.type === 'virus') {
+                    this.viruses.delete(id);
+                }
+            }
+        }
+
         this.stats.collisionTime = Date.now() - collisionStart;
     }
+
+
+
+
+
+
 
     processCollision(playerCell, other) {
         if (!playerCell.collidesWith(other)) return;
@@ -1681,37 +2044,100 @@ class EnhancedAgarServer {
                 break;
 
             // processCollision メソッド内の case 'player': 部分を修正
+            // 🎯 修正: processCollision 関数の case 'player' 部分
+            // この部分を既存のserver.jsの該当箇所と置き換えてください
+
             case 'player':
-                if (other.playerId !== playerCell.playerId && playerCell.canEat(other)) {
-                    playerCell.setMass(playerCell.mass + other.mass);
+                const otherPlayer = this.players.get(other.playerId);
+                if (otherPlayer && otherPlayer.id !== playerCell.playerId) {
 
-                    const predator = this.players.get(playerCell.playerId);
-                    const prey = this.players.get(other.playerId);
+                    const player = this.players.get(playerCell.playerId);
 
-                    if (predator && prey) {
-                        predator.score += Math.floor(other.mass * 2);
+                    // 🛡️ どちらかがバリア発動中の場合は捕食できない
+                    if (player?.barrierActive || otherPlayer?.barrierActive) {
+                        console.log(`🛡️ Barrier blocked player collision`);
+                        break;
+                    }
 
-                        // 🎯 プレイヤー死亡情報を送信
-                        const preySocket = Array.from(io.sockets.sockets.values())
-                            .find(s => s.id === prey.id);
+                    if (playerCell.canEat(other)) {
+                        // プレイヤーを食べる処理
+                        const gainedMass = other.mass;
+                        playerCell.setMass(playerCell.mass + gainedMass);
+                        player.score += Math.floor(gainedMass);
 
-                        if (preySocket) {
-                            preySocket.emit('player_death', {
-                                killedBy: predator.name,
-                                finalMass: prey.cells.reduce((sum, cell) => sum + cell.mass, 0),
-                                finalScore: prey.score,
-                                timestamp: Date.now()
-                            });
+                        const preyPlayer = this.players.get(other.playerId);
+                        if (preyPlayer) {
+                            // 🎯 修正: 食べられたセルを除外
+                            preyPlayer.cells = preyPlayer.cells.filter(cell => cell.id !== other.id);
+
+                            // 🎯 修正: スコアを減らす（失った質量分）
+                            preyPlayer.score = Math.max(0, preyPlayer.score - Math.floor(gainedMass));
+
+                            // 🎯 修正: 残りのセルの合計質量を計算
+                            const remainingMass = preyPlayer.cells.reduce((sum, cell) => sum + cell.mass, 0);
+                            console.log(`📉 ${preyPlayer.name} lost a cell (${gainedMass.toFixed(1)} mass). Remaining cells: ${preyPlayer.cells.length}, Total mass: ${remainingMass.toFixed(1)}`);
+
+                            // 🎯 全てのセルが失われた場合のみ敗北
+                            if (preyPlayer.cells.length === 0) {
+                                console.log(`💀 ${preyPlayer.name} was completely eliminated by ${player.name}`);
+
+                                io.to(preyPlayer.id).emit('player_death', {
+                                    killedBy: player.name,
+                                    finalMass: gainedMass,
+                                    finalScore: preyPlayer.score,
+                                    timestamp: Date.now()
+                                });
+
+                                this.removePlayer(preyPlayer.id);
+                            }
                         }
 
-                        this.removePlayer(other.playerId);
-
-                        console.log(`🎯 ${predator.name} ate ${prey.name}`);
+                        other.toDelete = true;
 
                         io.emit('player_eaten', {
-                            predatorId: predator.id,
-                            preyId: prey.id,
-                            newMass: playerCell.mass
+                            predatorId: player.id,
+                            preyId: other.playerId,
+                            cellId: other.id,
+                            remainingCells: preyPlayer ? preyPlayer.cells.length : 0  // 🎯 残りのセル数を通知
+                        });
+
+                    } else if (other.canEat(playerCell)) {
+                        // 自分が食べられる処理
+                        const lostMass = playerCell.mass;
+                        other.setMass(other.mass + lostMass);
+                        otherPlayer.score += Math.floor(lostMass);
+
+                        // 🎯 修正: 自分のセルを除外
+                        player.cells = player.cells.filter(cell => cell.id !== playerCell.id);
+
+                        // 🎯 修正: スコアを減らす（失った質量分）
+                        player.score = Math.max(0, player.score - Math.floor(lostMass));
+
+                        // 🎯 修正: 残りのセルの合計質量を計算
+                        const remainingMass = player.cells.reduce((sum, cell) => sum + cell.mass, 0);
+                        console.log(`📉 ${player.name} lost a cell (${lostMass.toFixed(1)} mass). Remaining cells: ${player.cells.length}, Total mass: ${remainingMass.toFixed(1)}`);
+
+                        // 🎯 全てのセルが失われた場合のみ敗北
+                        if (player.cells.length === 0) {
+                            console.log(`💀 ${player.name} was completely eliminated by ${otherPlayer.name}`);
+
+                            io.to(player.id).emit('player_death', {
+                                killedBy: otherPlayer.name,
+                                finalMass: lostMass,
+                                finalScore: player.score,
+                                timestamp: Date.now()
+                            });
+
+                            this.removePlayer(player.id);
+                        }
+
+                        playerCell.toDelete = true;
+
+                        io.emit('player_eaten', {
+                            predatorId: otherPlayer.id,
+                            preyId: player.id,
+                            cellId: playerCell.id,
+                            remainingCells: player ? player.cells.length : 0  // 🎯 残りのセル数を通知
                         });
                     }
                 }
@@ -1763,23 +2189,33 @@ class EnhancedAgarServer {
                 if (playerCell.canEat(other)) {
                     const player = this.players.get(playerCell.playerId);
                     if (player) {
+
+                        // 🛡️ バリアを持っている、または発動中の場合は取得不可（🎯 追加）
+                        if (player.hasBarrier || player.barrierActive) {
+                            console.log(`🔫❌ ${player.name} cannot pick up gun while having/using barrier`);
+                            break;
+                        }
+                        // 🎯 既存の弾数に+5、最大10発まで
+                        const newBullets = Math.min(
+                            (player.gunBullets || 0) + GAME_CONSTANTS.GUN_BULLETS_PER_ITEM,
+                            GAME_CONSTANTS.GUN_MAX_BULLETS
+                        );
+
                         player.hasGun = true;
-                        player.gunAcquiredTime = Date.now();
-                        player.gunBullets = GAME_CONSTANTS.GUN_MAX_BULLETS;
+                        player.gunBullets = newBullets;
                         player.lastGunShot = 0;
 
                         other.toDelete = true;
                         this.gunItems.delete(other.id);
 
-                        console.log(`🔫 ${player.name} acquired gun item!`);
+                        console.log(`🔫 ${player.name} acquired gun item! Bullets: ${newBullets}/${GAME_CONSTANTS.GUN_MAX_BULLETS}`);
 
                         // クライアントに通知
                         const socket = Array.from(io.sockets.sockets.values())
                             .find(s => s.id === player.id);
                         if (socket) {
                             socket.emit('gun_acquired', {
-                                duration: GAME_CONSTANTS.GUN_ITEM_DURATION,
-                                bullets: player.gunBullets
+                                bullets: newBullets
                             });
                         }
 
@@ -1790,6 +2226,201 @@ class EnhancedAgarServer {
                     }
                 }
                 break;
+                // 🔫 銃アイテムの取得処理（修正版）
+                if (other.toDelete || !this.gunItems.has(other.id)) {
+                    break;
+                }
+                if (playerCell.canEat(other)) {
+                    const player = this.players.get(playerCell.playerId);
+                    if (!player) {
+                        break;
+                    }
+
+
+                    // 🔫 既に銃を持っている場合は取得不可
+                    if (player.hasGun) {
+                        console.log(`🔫❌ ${player.name} already has gun`);
+                        break;
+                    }
+
+                    // ✅ アイテムを即座に削除してマークして重複処理を防ぐ
+                    other.toDelete = true;
+                    this.gunItems.delete(other.id);
+                    this.gameObjects.delete(other.id);
+
+                    // ✅ プレイヤーに銃を付与
+                    player.hasGun = true;
+                    player.gunBullets = GAME_CONSTANTS.GUN_BULLETS_PER_ITEM;
+                    player.gunAcquiredTime = Date.now();
+                    player.lastShootTime = 0;
+
+                    console.log(`🔫 ${player.name} acquired gun item! Bullets: ${player.gunBullets}`);
+
+                    // ✅ 取得したプレイヤーにのみ通知
+                    const socket = Array.from(io.sockets.sockets.values())
+                        .find(s => s.id === player.id);
+                    if (socket) {
+                        socket.emit('gun_acquired', {
+                            bullets: player.gunBullets
+                        });
+                    }
+
+                    // ✅ 全プレイヤーに収集イベントを通知
+                    io.emit('gun_item_collected', {
+                        playerId: player.id,
+                        playerName: player.name,
+                        itemId: other.id  // アイテムIDを追加
+                    });
+                }
+                break;
+
+            // 🛡️ バリアアイテムの取得処理（新規追加）
+            case 'barrierItem':
+                if (playerCell.canEat(other)) {
+                    const player = this.players.get(playerCell.playerId);
+                    if (player) {
+                        // 🔫 銃を持っている場合はバリアを拾えない
+                        if (player.hasGun) {
+                            console.log(`🛡️❌ ${player.name} cannot pick up barrier while having gun`);
+                            return;
+                        }
+
+                        // 🛡️ 既にバリアを持っている場合は拾えない
+                        if (player.hasBarrier) {
+                            console.log(`🛡️❌ ${player.name} already has barrier`);
+                            return;
+                        }
+
+                        // ✅ 保持状態にする（発動はしない）
+                        player.hasBarrier = true;
+                        player.barrierActive = false;
+
+                        other.toDelete = true;
+                        this.barrierItems.delete(other.id);
+
+                        console.log(`🛡️ ${player.name} acquired barrier item! (not activated yet)`);
+
+                        const socket = Array.from(io.sockets.sockets.values())
+                            .find(s => s.id === player.id);
+                        if (socket) {
+                            socket.emit('barrier_acquired', {
+                                // durationは送信しない（まだ発動していない）
+                            });
+                        }
+
+                        io.emit('barrier_item_collected', {
+                            playerId: player.id,
+                            playerName: player.name
+                        });
+                    }
+                }
+                break;
+
+                if (other.toDelete || !this.barrierItems.has(other.id)) {
+                    break;
+                }
+
+                if (playerCell.canEat(other)) {
+                    const player = this.players.get(playerCell.playerId);
+                    if (!player) {
+                        break;
+                    }
+
+                    // 🔫 銃を持っている場合は取得不可
+                    if (player.hasGun) {
+                        console.log(`🛡️❌ ${player.name} cannot pick up barrier while having gun`);
+                        break;
+                    }
+
+                    // 🛡️ 既にバリアを持っている場合は取得不可
+                    if (player.hasBarrier) {
+                        console.log(`🛡️❌ ${player.name} already has barrier`);
+                        break;
+                    }
+
+                    // ✅ アイテムを即座に削除してマークして重複処理を防ぐ
+                    other.toDelete = true;
+                    this.barrierItems.delete(other.id);
+                    this.gameObjects.delete(other.id);
+
+                    // ✅ プレイヤーにバリアを付与
+                    player.hasBarrier = true;
+                    player.barrierActive = false;
+
+                    console.log(`🛡️ ${player.name} acquired barrier item! (not activated yet)`);
+
+                    // ✅ 取得したプレイヤーにのみ通知
+                    const socket = Array.from(io.sockets.sockets.values())
+                        .find(s => s.id === player.id);
+                    if (socket) {
+                        socket.emit('barrier_acquired', {});
+                    }
+
+                    // ✅ 全プレイヤーに収集イベントを通知
+                    io.emit('barrier_item_collected', {
+                        playerId: player.id,
+                        playerName: player.name,
+                        itemId: other.id  // アイテムIDを追加
+                    });
+                }
+                break;
+
+
+            case 'speedUpItem':
+                if (other.toDelete || !this.speedUpItems.has(other.id)) {
+                    break;
+                }
+                if (playerCell.canEat(other)) {
+                    const player = this.players.get(playerCell.playerId);
+                    if (!player) {
+                        break;
+                    }
+
+                    // 🔫 銃を持っている場合は取得不可
+                    if (player.hasGun) {
+                        console.log(`👟❌ ${player.name} cannot pick up speedup while having gun`);
+                        break;
+                    }
+
+                    // 🛡️ バリアを持っている場合は取得不可
+                    if (player.hasBarrier) {
+                        console.log(`👟❌ ${player.name} cannot pick up speedup while having barrier`);
+                        break;
+                    }
+
+                    // 👟 既にスピードアップを持っている場合は取得不可
+                    if (player.hasSpeedUp) {
+                        console.log(`👟❌ ${player.name} already has speedup`);
+                        break;
+                    }
+
+                    // ✅ アイテムを即座に削除してマークして重複処理を防ぐ
+                    other.toDelete = true;
+                    this.speedUpItems.delete(other.id);
+                    this.gameObjects.delete(other.id);
+
+                    // ✅ プレイヤーにスピードアップを付与
+                    player.hasSpeedUp = true;
+                    player.speedUpActive = false;
+
+                    console.log(`👟 ${player.name} acquired speedup item! (not activated yet)`);
+
+                    // ✅ 取得したプレイヤーにのみ通知
+                    const socket = Array.from(io.sockets.sockets.values())
+                        .find(s => s.id === player.id);
+                    if (socket) {
+                        socket.emit('speedup_acquired', {});
+                    }
+
+                    // ✅ 全プレイヤーに収集イベントを通知
+                    io.emit('speedup_item_collected', {
+                        playerId: player.id,
+                        playerName: player.name,
+                        itemId: other.id
+                    });
+                }
+                break;
+
 
 
         }
@@ -1821,8 +2452,14 @@ class EnhancedAgarServer {
             for (const player of this.players.values()) {
                 if (player.id === bullet.shooterId) continue;
 
+                // 🛡️ バリアが発動中の場合は弾を無効化
+                if (player.barrierActive) {
+                    continue;
+                }
+
                 for (let i = 0; i < player.cells.length; i++) {
                     const cell = player.cells[i];
+
 
                     if (bullet.collidesWith(cell)) {
                         const shooter = this.players.get(bullet.shooterId);
@@ -1901,109 +2538,116 @@ class EnhancedAgarServer {
     }
 
     getGameState() {
-        const playersData = {};
+        const now = Date.now();  // ✅ 追加
 
-        for (const [id, player] of this.players) {
+        const players = {};
+        for (const [id, player] of this.players.entries()) {
             const totalMass = player.cells.reduce((sum, cell) => sum + cell.mass, 0);
-            playersData[id] = {
+
+            players[id] = {
                 id: player.id,
                 name: player.name,
-                color: player.cells[0]?.color || '#FF0000',
-                skin: player.skin,
+                color: player.cells[0]?.color || '#FF6B6B',  // ✅ プレイヤーの色を追加
                 cells: player.cells.map(cell => ({
                     id: cell.id,
                     x: Math.round(cell.x * 100) / 100,
                     y: Math.round(cell.y * 100) / 100,
-                    mass: Math.round(cell.mass * 100) / 100,
+                    mass: Math.round(cell.mass * 10) / 10,
                     radius: Math.round(cell.radius * 100) / 100,
-                    canMerge: cell.canMerge,
-                    isProtected: cell.isProtected,
-                    protectionTime: cell.protectionTime
+                    color: cell.color || '#FF6B6B',  // ✅ セルの色も確実に設定
+                    skin: cell.skin
                 })),
                 score: player.score,
-                virusRiskRewards: player.virusRiskRewards,
-                status: totalMass < GAME_CONSTANTS.VIRUS_MIN_INTERACTION_MASS ? 'safe' : 'risk',
+                mass: totalMass,
+                alive: player.alive,
+
+                // 🔫 銃アイテム
                 hasGun: player.hasGun || false,
                 gunBullets: player.gunBullets || 0,
-                gunTimeLeft: player.hasGun ?
-                    Math.max(0, GAME_CONSTANTS.GUN_ITEM_DURATION - (Date.now() - player.gunAcquiredTime)) : 0
 
-
+                // 🛡️ バリアアイテム
+                hasBarrier: player.hasBarrier || false,
+                barrierActive: player.barrierActive || false,
+                barrierTimeLeft: player.barrierActive && player.barrierAcquiredTime
+                    ? Math.max(0, GAME_CONSTANTS.BARRIER_DURATION - (now - player.barrierAcquiredTime))
+                    : 0
             };
         }
-        // 銃アイテムの情報
-        const gunItems = Array.from(this.gunItems.values())
-            .map(item => ({
+
+        return {
+            players: players,  // ✅ playersData ではなく players
+            foods: Array.from(this.gameObjects.values())
+                .filter(obj => obj.type === 'food')
+                .map(food => ({
+                    id: food.id,
+                    x: Math.round(food.x * 100) / 100,
+                    y: Math.round(food.y * 100) / 100,
+                    mass: food.mass,
+                    radius: food.radius,
+                    color: food.color,
+                    type: food.type
+                })),
+
+            viruses: Array.from(this.viruses.values()).map(virus => ({
+                id: virus.id,
+                x: Math.round(virus.x * 100) / 100,
+                y: Math.round(virus.y * 100) / 100,
+                mass: virus.mass,
+                radius: virus.radius,
+                type: virus.type
+            })),
+
+            ejectedMasses: Array.from(this.gameObjects.values())
+                .filter(obj => obj.type === 'ejectedMass')
+                .map(ej => ({
+                    id: ej.id,
+                    x: Math.round(ej.x * 100) / 100,
+                    y: Math.round(ej.y * 100) / 100,
+                    mass: ej.mass,
+                    radius: ej.radius,
+                    type: ej.type
+                })),
+
+            // 🔫 銃アイテムと弾
+            gunItems: Array.from(this.gunItems.values()).map(item => ({
                 id: item.id,
                 x: Math.round(item.x * 100) / 100,
                 y: Math.round(item.y * 100) / 100,
-                radius: Math.round(item.radius * 100) / 100,
-                rotation: item.rotation,
-                pulsePhase: item.pulsePhase
-            }));
+                radius: item.radius,
+                type: item.type
+            })),
 
-        // 弾の情報
-        const bullets = Array.from(this.bullets.values())
-            .map(bullet => ({
+            bullets: Array.from(this.bullets.values()).map(bullet => ({
                 id: bullet.id,
                 x: Math.round(bullet.x * 100) / 100,
                 y: Math.round(bullet.y * 100) / 100,
                 radius: bullet.radius,
+                angle: bullet.angle,
                 shooterId: bullet.shooterId,
-                angle: bullet.angle
-            }));
+                type: bullet.type
+            })),
 
-        const foods = Array.from(this.gameObjects.values())
-            .filter(obj => obj.type === 'food')
-            .slice(0, 500)
-            .map(food => ({
-                id: food.id,
-                x: Math.round(food.x * 100) / 100,
-                y: Math.round(food.y * 100) / 100,
-                mass: Math.round(food.mass * 100) / 100,
-                radius: Math.round(food.radius * 100) / 100,
-                color: food.color
-            }));
+            // 🛡️ バリアアイテム
+            barrierItems: Array.from(this.barrierItems.values()).map(item => ({
+                id: item.id,
+                x: Math.round(item.x * 100) / 100,
+                y: Math.round(item.y * 100) / 100,
+                radius: item.radius,
+                type: item.type
+            })),
 
-        const viruses = Array.from(this.viruses.values())
-            .map(virus => ({
-                id: virus.id,
-                x: Math.round(virus.x * 100) / 100,
-                y: Math.round(virus.y * 100) / 100,
-                mass: Math.round(virus.mass * 100) / 100,
-                radius: Math.round(virus.radius * 100) / 100,
-                rotation: virus.rotation,
-                pulsePhase: virus.pulsePhase
-            }));
 
-        const ejectedMasses = Array.from(this.gameObjects.values())
-            .filter(obj => obj.type === 'ejectedMass')
-            .map(eject => ({
-                id: eject.id,
-                x: Math.round(eject.x * 100) / 100,
-                y: Math.round(eject.y * 100) / 100,
-                mass: Math.round(eject.mass * 100) / 100,
-                radius: Math.round(eject.radius * 100) / 100,
-                alpha: eject.alpha || 1.0
-            }));
 
-        return {
-            players: playersData,
-            foods,
-            viruses,
-            ejectedMasses,
-            gameTime: Math.floor(this.gameTime),
+            leaderboard: this.leaderboard,
             worldSize: {
                 width: GAME_CONSTANTS.WORLD_WIDTH,
                 height: GAME_CONSTANTS.WORLD_HEIGHT
             },
-            leaderboard: this.leaderboard,
             stats: this.stats,
-            chatMessages: this.chatMessages,
-            gunItems,
-            bullets
+            chatMessages: this.chatMessages
         };
     }
+
 
     startGameLoop() {
         console.log("🎮 Starting enhanced game loop with chat system...");
@@ -2128,23 +2772,60 @@ io.on("connection", (socket) => {
             console.error(`❌ Shoot_gun error for ${socket.id}:`, error);
         }
     });
-    socket.on("buy_gun", (data) => {
+    socket.on("buy_gun", () => {
         try {
             const result = gameServer.handleBuyGun(socket.id);
-            socket.emit('buy_gun_result', result);
+            socket.emit("buy_gun_result", result);
+        } catch (error) {
+            console.error("❌ buy_gun error:", error);
+            socket.emit("buy_gun_result", { success: false, message: "購入エラーが発生しました" });
+        }
+    });
 
-            if (result.success) {
-                console.log("✅ " + socket.id + " successfully bought a gun");
-            } else {
-                console.log("❌ " + socket.id + " failed to buy gun: " + result.message);
+
+    // 🛡️ バリア発動イベント（新規追加）
+    socket.on("activate_barrier", (data) => {
+        try {
+            const success = gameServer.handleBarrierActivate(socket.id);
+            if (!success) {
+                console.log(`🛡️ Failed to activate barrier for ${socket.id}`);
             }
         } catch (error) {
-            console.error("❌ Buy_gun error:", error);
-            socket.emit('buy_gun_result', {
-                success: false,
-                message: "購入エラーが発生しました"
-            });
+            console.error(`❌ Activate_barrier error for ${socket.id}:`, error);
         }
+    });
+    socket.on("buy_barrier", () => {
+        try {
+            const result = gameServer.handleBuyBarrier(socket.id);
+            socket.emit("buy_barrier_result", result);
+        } catch (error) {
+            console.error("❌ buy_barrier error:", error);
+            socket.emit("buy_barrier_result", { success: false, message: "購入エラーが発生しました" });
+        }
+    });
+
+
+    // 👟 スピードアップ発動
+    socket.on('activate_speedup', (data) => {
+        const player = this.players.get(socket.id);
+        if (!player || !player.hasSpeedUp || player.speedUpActive) {
+            return;
+        }
+
+        player.speedUpActive = true;
+        player.speedUpStartTime = Date.now();
+        player.speedUpTimeLeft = GAME_CONSTANTS.SPEEDUP_DURATION;
+
+        console.log(`👟 ${player.name} activated speedup!`);
+
+        socket.emit('speedup_activated', {
+            duration: GAME_CONSTANTS.SPEEDUP_DURATION
+        });
+
+        io.emit('speedup_item_collected', {
+            playerId: player.id,
+            playerName: player.name
+        });
     });
 });
 
