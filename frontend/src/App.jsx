@@ -6,9 +6,11 @@ import { ChatLayer } from './components/ChatLayer';
 const GAME_CONSTANTS = {
   MASS_TO_RADIUS: (mass) => Math.sqrt(mass / Math.PI) * 1.2,
   SPEED_FORMULA: (mass) => {
-    const baseSpeed = 100 / Math.pow(mass, 0.4);
+    const baseSpeed = 60 / Math.pow(mass, 0.4);
     return Math.max(baseSpeed, 8);
   },
+
+
 
   TARGET_FPS: 60,
   FRAME_TIME: 1000 / 60,
@@ -25,20 +27,12 @@ const GAME_CONSTANTS = {
 };
 
 const getServerURL = () => {
-  // ✅ Vercel本番はここが最優先（ViteはVITE_ が必要）
-  const envUrl = import.meta.env.VITE_SOCKET_URL;
-  if (envUrl) return envUrl;
-
-  // ローカル開発
   const hostname = window.location.hostname;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return "http://localhost:8080";
   }
-
-  // （必要なら残す：同一LAN等での直叩き用）
   return `http://${hostname}:8080`;
 };
-
 
 // 🎯 UIToggleButton
 const UIToggleButton = ({ showUI, onToggle }) => {
@@ -80,12 +74,68 @@ const UIToggleButton = ({ showUI, onToggle }) => {
   );
 };
 
-const ShopUI = ({ showShop, onClose, onBuyGun, currentMass, hasGun }) => {
+// =========================
+// 🛍️ Shop UI（銃＋バリア）
+// =========================
+const kbdStyle = {
+  backgroundColor: "rgba(255, 255, 255, 0.1)",
+  padding: "2px 6px",
+  borderRadius: "4px",
+  border: "1px solid rgba(255, 255, 255, 0.3)",
+  fontFamily: "monospace",
+  fontSize: "12px"
+};
+
+const ShopUI = ({
+  showShop,
+  onClose,
+  currentMass,
+
+  // gun
+  onBuyGun,
+  hasGun,
+
+  // barrier
+  onBuyBarrier,
+  hasBarrier,
+  barrierActive
+}) => {
   if (!showShop) return null;
 
   const gunPrice = 100;
-  const canAfford = currentMass >= gunPrice;
-  const alreadyHasGun = hasGun;
+  const barrierPrice = 120;
+  const MIN_MASS_TO_BUY = 150;  // 🎯 最低購入質量
+
+  // 質量チェックを強化
+  const canAffordGun = currentMass >= MIN_MASS_TO_BUY && currentMass >= gunPrice;
+  const canAffordBarrier = currentMass >= MIN_MASS_TO_BUY && currentMass >= barrierPrice;
+
+  const gunDisabled = !canAffordGun || hasGun;
+
+  // 既存仕様：バリアは「所持（未発動）」→ 左クリックで activate_barrier
+  // 運用上、所持中 or 発動中 は再購入不可にしておく
+  const barrierDisabled = !canAffordBarrier || hasBarrier || barrierActive;
+
+  const cardStyle = (borderColor, bg) => ({
+    backgroundColor: bg,
+    padding: "18px",
+    borderRadius: "15px",
+    border: `2px solid ${borderColor}`,
+    marginBottom: "14px"
+  });
+
+  const buyButtonStyle = (enabled, color) => ({
+    width: "100%",
+    marginTop: "12px",
+    padding: "12px",
+    fontSize: "16px",
+    fontWeight: "bold",
+    border: "none",
+    borderRadius: "10px",
+    cursor: enabled ? "pointer" : "not-allowed",
+    backgroundColor: enabled ? color : "#555",
+    color: "white"
+  });
 
   return (
     <div style={{
@@ -97,13 +147,13 @@ const ShopUI = ({ showShop, onClose, onBuyGun, currentMass, hasGun }) => {
       border: "3px solid #FFD700",
       borderRadius: "20px",
       padding: "30px",
-      minWidth: "400px",
+      minWidth: "460px",
       boxShadow: "0 10px 50px rgba(255, 215, 0, 0.4)",
       zIndex: 3000,
       color: "white",
-      fontFamily: "Arial, sans-serif"
+      fontFamily: '"Segoe UI", Arial, sans-serif'
     }}>
-      {/* ヘッダー */}
+      {/* header */}
       <div style={{
         display: "flex",
         justifyContent: "space-between",
@@ -120,6 +170,7 @@ const ShopUI = ({ showShop, onClose, onBuyGun, currentMass, hasGun }) => {
         }}>
           🛍️ ショップ
         </h2>
+
         <button
           onClick={onClose}
           style={{
@@ -133,28 +184,19 @@ const ShopUI = ({ showShop, onClose, onBuyGun, currentMass, hasGun }) => {
             height: "35px",
             display: "flex",
             alignItems: "center",
-            justifyContent: "center",
-            transition: "all 0.2s"
-          }}
-          onMouseEnter={(e) => {
-            e.target.style.backgroundColor = "#FF4444";
-            e.target.style.color = "white";
-          }}
-          onMouseLeave={(e) => {
-            e.target.style.backgroundColor = "transparent";
-            e.target.style.color = "#FF4444";
+            justifyContent: "center"
           }}
         >
           ✕
         </button>
       </div>
 
-      {/* 現在の質量表示 */}
+      {/* mass */}
       <div style={{
         backgroundColor: "rgba(33, 150, 243, 0.2)",
         padding: "15px",
         borderRadius: "10px",
-        marginBottom: "20px",
+        marginBottom: "18px",
         border: "2px solid rgba(33, 150, 243, 0.5)"
       }}>
         <div style={{ fontSize: "14px", color: "#AAA", marginBottom: "5px" }}>
@@ -165,101 +207,86 @@ const ShopUI = ({ showShop, onClose, onBuyGun, currentMass, hasGun }) => {
         </div>
       </div>
 
-      {/* 商品リスト */}
-      <div style={{
-        backgroundColor: "rgba(255, 215, 0, 0.1)",
-        padding: "20px",
-        borderRadius: "15px",
-        border: "2px solid rgba(255, 215, 0, 0.3)"
-      }}>
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "15px",
-          marginBottom: "15px"
-        }}>
-          <div style={{ fontSize: "48px" }}>🔫</div>
+      {/* gun */}
+      <div style={cardStyle("rgba(255, 215, 0, 0.25)", "rgba(255, 215, 0, 0.06)")}>
+        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          <div style={{ fontSize: "46px" }}>🔫</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: "20px", fontWeight: "bold", color: "#FFD700" }}>
-              銃
-            </div>
-            <div style={{ fontSize: "14px", color: "#AAA", marginTop: "5px" }}>
-              • 弾数: 10発<br />
-              • 持続時間: 30秒<br />
-              • ダメージ: 100質量
+            <div style={{ fontSize: "18px", fontWeight: "bold", color: "#FFD700" }}>銃</div>
+            <div style={{ fontSize: "13px", color: "#AAA", marginTop: "6px" }}>
+              • 弾数/持続時間はサーバー設定に依存<br />
+              • 購入後はクリック/ F で発射（既存仕様）
             </div>
           </div>
           <div style={{
-            fontSize: "24px",
+            fontSize: "22px",
             fontWeight: "bold",
-            color: canAfford ? "#4CAF50" : "#FF4444"
+            color: canAffordGun ? "#4CAF50" : "#FF4444"
           }}>
-            {gunPrice}
+            100
           </div>
         </div>
 
-        {/* 購入ボタン */}
         <button
           onClick={onBuyGun}
-          disabled={!canAfford || alreadyHasGun}
-          style={{
-            width: "100%",
-            padding: "15px",
-            fontSize: "18px",
-            fontWeight: "bold",
-            border: "none",
-            borderRadius: "10px",
-            cursor: (canAfford && !alreadyHasGun) ? "pointer" : "not-allowed",
-            backgroundColor: (canAfford && !alreadyHasGun) ? "#4CAF50" : "#555",
-            color: "white",
-            transition: "all 0.2s",
-            boxShadow: (canAfford && !alreadyHasGun) ? "0 4px 15px rgba(76, 175, 80, 0.4)" : "none"
-          }}
-          onMouseEnter={(e) => {
-            if (canAfford && !alreadyHasGun) {
-              e.target.style.backgroundColor = "#45a049";
-              e.target.style.transform = "scale(1.02)";
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (canAfford && !alreadyHasGun) {
-              e.target.style.backgroundColor = "#4CAF50";
-              e.target.style.transform = "scale(1)";
-            }
-          }}
+          disabled={gunDisabled}
+          style={buyButtonStyle(!gunDisabled, "#4CAF50")}
         >
-          {alreadyHasGun ? "🔫 既に装備中" :
-            canAfford ? "💰 購入する" : "❌ 質量が足りません"}
+          {hasGun ? "🔫 既に装備中" :
+            (currentMass < MIN_MASS_TO_BUY ? "❌ 質量150以上で購入可能" :
+              (canAffordGun ? "💰 購入する" : "❌ 質量が足りません"))}
         </button>
       </div>
 
-      {/* 操作説明 */}
+      {/* barrier */}
+      <div style={cardStyle("rgba(0, 200, 255, 0.25)", "rgba(0, 200, 255, 0.06)")}>
+        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          <div style={{ fontSize: "46px" }}>🛡️</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "18px", fontWeight: "bold", color: "#8BE9FF" }}>バリア</div>
+            <div style={{ fontSize: "13px", color: "#AAA", marginTop: "6px" }}>
+              • 購入 → 所持（未発動）<br />
+              • 左クリックで activate_barrier（既存実装）
+            </div>
+          </div>
+          <div style={{
+            fontSize: "22px",
+            fontWeight: "bold",
+            color: canAffordBarrier ? "#4CAF50" : "#FF4444"
+          }}>
+            120
+          </div>
+        </div>
+
+        <button
+          onClick={onBuyBarrier}
+          disabled={barrierDisabled}
+          style={buyButtonStyle(!barrierDisabled, "#00B0FF")}
+        >
+          {(hasBarrier || barrierActive)
+            ? "🛡️ 既に所持/発動中"
+            : (canAffordBarrier ? "💰 購入する" : "❌ 質量150以上で購入可能")}
+        </button>
+      </div>
+
+      {/* help */}
       <div style={{
-        marginTop: "20px",
-        padding: "15px",
+        marginTop: "12px",
+        padding: "12px",
         backgroundColor: "rgba(96, 125, 139, 0.2)",
         borderRadius: "10px",
-        fontSize: "14px",
+        fontSize: "13px",
         color: "#AAA",
         border: "1px solid rgba(96, 125, 139, 0.3)"
       }}>
         <div style={{ fontWeight: "bold", marginBottom: "8px", color: "#FFF" }}>
           📌 操作方法
         </div>
-        <div>• <kbd style={kbdStyle}>B</kbd> キー: ショップを開閉</div>
-        <div>• <kbd style={kbdStyle}>ESC</kbd> キー: ショップを閉じる</div>
+        <div>• <kbd style={kbdStyle}>B</kbd> : ショップを開閉</div>
+        <div>• <kbd style={kbdStyle}>ESC</kbd> : ショップを閉じる</div>
       </div>
     </div>
   );
-};
-
-const kbdStyle = {
-  backgroundColor: "rgba(255, 255, 255, 0.1)",
-  padding: "2px 6px",
-  borderRadius: "4px",
-  border: "1px solid rgba(255, 255, 255, 0.3)",
-  fontFamily: "monospace",
-  fontSize: "12px"
 };
 
 const ShopMessage = ({ message, type }) => {
@@ -271,31 +298,22 @@ const ShopMessage = ({ message, type }) => {
       top: "100px",
       left: "50%",
       transform: "translateX(-50%)",
-      backgroundColor: type === "success" ? "rgba(76, 175, 80, 0.95)" : "rgba(244, 67, 54, 0.95)",
+      backgroundColor: type === "success"
+        ? "rgba(76, 175, 80, 0.95)"
+        : "rgba(244, 67, 54, 0.95)",
       color: "white",
       padding: "15px 30px",
       borderRadius: "10px",
       fontSize: "16px",
       fontWeight: "bold",
       boxShadow: "0 4px 20px rgba(0, 0, 0, 0.3)",
-      zIndex: 4000,
-      animation: "slideDown 0.3s ease-out"
+      zIndex: 4000
     }}>
       {type === "success" ? "✅" : "❌"} {message}
     </div>
   );
 };
 
-// ============================================
-// 4. Socket.ioイベントハンドラーに追加
-// ============================================
-
-
-// ============================================
-// 5. キーボードイベントハンドラーに追加
-// ============================================
-
-// useEffect内のhandleKeyDownに以下を追加（'KeyH'の処理の後に）:
 
 function App() {
   // === Socket管理 ===
@@ -326,7 +344,21 @@ function App() {
   const [bullets, setBullets] = useState([]);
   const [hasGun, setHasGun] = useState(false);
   const [gunBullets, setGunBullets] = useState(0);
-  const [gunTimeLeft, setGunTimeLeft] = useState(0);
+  const [gunTimeLeft, setGunTimeLeft] = useState(0); // 🎯 追加
+
+  // 🛡️ バリアアイテム関連の state（新規追加）
+  const [barrierItems, setBarrierItems] = useState([]);
+  const [hasBarrier, setHasBarrier] = useState(false);
+  const [barrierTimeLeft, setBarrierTimeLeft] = useState(0);
+  const [barrierActive, setBarrierActive] = useState(false);  // 🎯 発動状態
+
+  // 👟 スピードアップアイテム関連の state（新規追加）
+  const [speedUpItems, setSpeedUpItems] = useState([]);
+  const [hasSpeedUp, setHasSpeedUp] = useState(false);
+  const [speedUpTimeLeft, setSpeedUpTimeLeft] = useState(0);
+  const [speedUpActive, setSpeedUpActive] = useState(false);
+
+  // 🛍️ ショップ関連（追加）
   const [showShop, setShowShop] = useState(false);
   const [shopMessage, setShopMessage] = useState("");
   const [shopMessageType, setShopMessageType] = useState("");
@@ -368,6 +400,25 @@ function App() {
   const bulletsRef = useRef([]);
   const hasGunRef = useRef(false);
   const gunBulletsRef = useRef(0);
+  const gunTimeLeftRef = useRef(0); // 🎯 追加
+
+  // 🛡️ バリアアイテム関連の refs（新規追加）
+  const barrierItemsRef = useRef([]);
+  const hasBarrierRef = useRef(false);
+  const barrierActiveRef = useRef(false);  // 🎯 追加
+  // 👟 スピードアップアイテム関連の refs（新規追加）
+  const speedUpItemsRef = useRef([]);
+  const hasSpeedUpRef = useRef(false);
+  const speedUpActiveRef = useRef(false);
+
+  useEffect(() => { barrierActiveRef.current = barrierActive; }, [barrierActive]);
+  useEffect(() => { barrierItemsRef.current = barrierItems; }, [barrierItems]);
+  useEffect(() => { hasBarrierRef.current = hasBarrier; }, [hasBarrier]);
+
+  // 👟 スピードアップアイテム関連の同期（新規追加）
+  useEffect(() => { speedUpItemsRef.current = speedUpItems; }, [speedUpItems]);
+  useEffect(() => { hasSpeedUpRef.current = hasSpeedUp; }, [hasSpeedUp]);
+  useEffect(() => { speedUpActiveRef.current = speedUpActive; }, [speedUpActive]);
 
   // === アニメーション状態 ===
   const animationState = useRef({
@@ -447,6 +498,7 @@ function App() {
     const now = Date.now();
 
     if (now - ejectState.current.lastEjectTime < 200) {
+      console.log('⏳ Eject cooldown active');
       return;
     }
 
@@ -463,7 +515,7 @@ function App() {
     );
 
     if (ejectableCells.length === 0) {
-      console.log('❌ Cannot eject: insufficient mass (need 38+)');
+      console.log(`❌ Cannot eject: insufficient mass (need ${GAME_CONSTANTS.EJECT_MIN_MASS}+)`);
       return;
     }
 
@@ -528,6 +580,73 @@ function App() {
     console.log(`🔫 Gun shot! (${gunBulletsRef.current} bullets left)`);
   }, []);
 
+  // 🛡️ バリア発動関数（🎯 新規追加）
+  const activateBarrier = useCallback(() => {
+    if (!hasBarrierRef.current) {
+      console.log('❌ Cannot activate barrier: no barrier item');
+      return;
+    }
+
+    if (barrierActiveRef.current) {
+      console.log('❌ Cannot activate barrier: already active');
+      return;
+    }
+
+    socketRef.current?.emit("activate_barrier", {
+      timestamp: Date.now()
+    });
+
+    console.log(`🛡️ Barrier activation requested!`);
+  }, []);
+
+  // 👟 スピードアップ発動関数（新規追加）
+  const activateSpeedUp = useCallback(() => {
+    if (!hasSpeedUpRef.current) {
+      console.log('❌ Cannot activate speedup: no speedup item');
+      return;
+    }
+
+    if (speedUpActiveRef.current) {
+      console.log('❌ Cannot activate speedup: already active');
+      return;
+    }
+
+    socketRef.current?.emit("activate_speedup", {
+      timestamp: Date.now()
+    });
+
+    console.log(`👟 SpeedUp activation requested!`);
+  }, []);
+
+  // 🛍️ 現在質量（追加）
+  const getCurrentMass = useCallback(() => {
+    const myPlayer = playersRef.current[myIdRef.current];
+    if (!myPlayer?.cells) return 0;
+    return myPlayer.cells.reduce((sum, cell) => sum + (cell.mass || 0), 0);
+  }, []);
+  const MIN_MASS_TO_BUY = 150;
+  // 🛍️ 銃購入（追加）
+  const buyGun = useCallback(() => {
+    if (!socketRef.current?.connected) {
+      setShopMessage("サーバーに接続されていません");
+      setShopMessageType("error");
+      setTimeout(() => setShopMessage(""), 3000);
+      return;
+    }
+    socketRef.current.emit("buy_gun", { timestamp: Date.now() });
+  }, []);
+
+  // 🛍️ バリア購入（追加）
+  const buyBarrier = useCallback(() => {
+    if (!socketRef.current?.connected) {
+      setShopMessage("サーバーに接続されていません");
+      setShopMessageType("error");
+      setTimeout(() => setShopMessage(""), 3000);
+      return;
+    }
+    socketRef.current.emit("buy_barrier", { timestamp: Date.now() });
+  }, []);
+
   // === 画面サイズとDPR対応 ===
   const [canvasSize, setCanvasSize] = useState(() => {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -558,6 +677,44 @@ function App() {
   useEffect(() => { hasGunRef.current = hasGun; }, [hasGun]);
   useEffect(() => { gunBulletsRef.current = gunBullets; }, [gunBullets]);
   useEffect(() => { chatMessagesStateRef.current = chatMessages; }, [chatMessages]);
+  useEffect(() => { gunTimeLeftRef.current = gunTimeLeft; }, [gunTimeLeft]); // 🎯 追加
+
+  // 🔫 銃の残り時間カウントダウン
+  useEffect(() => {
+    if (!hasGun || gunTimeLeft <= 0) return;
+
+    const timer = setInterval(() => {
+      setGunTimeLeft(prev => {
+        const newTime = Math.max(0, prev - 100);
+        if (newTime <= 0) {
+          setHasGun(false);
+          setGunBullets(0);
+        }
+        return newTime;
+      });
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, [hasGun, gunTimeLeft]);
+
+  // 👟 スピードアップの残り時間カウントダウン（新規追加）
+  useEffect(() => {
+    if (!speedUpActive || speedUpTimeLeft <= 0) return;
+
+    const timer = setInterval(() => {
+      setSpeedUpTimeLeft(prev => {
+        const newTime = Math.max(0, prev - 100);
+        if (newTime <= 0) {
+          setSpeedUpActive(false);
+          setHasSpeedUp(false);
+        }
+        return newTime;
+      });
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, [speedUpActive, speedUpTimeLeft]);
+
 
   // === ウィンドウリサイズ最適化 ===
   useEffect(() => {
@@ -700,12 +857,23 @@ function App() {
       if (data.gunItems) setGunItems(data.gunItems);
       if (data.bullets) setBullets(data.bullets);
 
-      // 自分の銃の状態を初期化
+      // 🛡️ バリアアイテムの初期化
+      if (data.barrierItems) setBarrierItems(data.barrierItems);
+
+      // 👟 スピードアップアイテムの初期化
+      if (data.speedUpItems) setSpeedUpItems(data.speedUpItems);
+
+      // ✅ 自分の状態を初期化（修正版）
       const myPlayer = data.players?.[data.myId];
       if (myPlayer) {
         setHasGun(myPlayer.hasGun || false);
         setGunBullets(myPlayer.gunBullets || 0);
-        setGunTimeLeft(myPlayer.gunTimeLeft || 0);
+        setHasBarrier(myPlayer.hasBarrier || false);
+        setBarrierActive(myPlayer.barrierActive || false);
+        setBarrierTimeLeft(myPlayer.barrierTimeLeft || 0);
+        setHasSpeedUp(myPlayer.hasSpeedUp || false);  // 👟 追加
+        setSpeedUpActive(myPlayer.speedUpActive || false);  // 👟 追加
+        setSpeedUpTimeLeft(myPlayer.speedUpTimeLeft || 0);  // 👟 追加
       }
 
       if (data.chatMessages) {
@@ -740,12 +908,21 @@ function App() {
       if (data.gunItems) setGunItems(data.gunItems);
       if (data.bullets) setBullets(data.bullets);
 
+      // 🛡️ バリアアイテムの更新（新規追加）
+      if (data.barrierItems) setBarrierItems(data.barrierItems);
+
+      // 👟 スピードアップアイテムの更新（新規追加）
+      if (data.speedUpItems) setSpeedUpItems(data.speedUpItems);
+
       // 自分の銃の状態を更新
       const myPlayer = data.players?.[myIdRef.current];
       if (myPlayer) {
         setHasGun(myPlayer.hasGun || false);
         setGunBullets(myPlayer.gunBullets || 0);
-        setGunTimeLeft(myPlayer.gunTimeLeft || 0);
+        setHasBarrier(myPlayer.hasBarrier || false);  // 🛡️ 新規追加
+        setBarrierTimeLeft(myPlayer.barrierTimeLeft || 0);  // 🛡️ 新規追加
+        setHasSpeedUp(myPlayer.hasSpeedUp || false);  // 👟 追加
+        setSpeedUpTimeLeft(myPlayer.speedUpTimeLeft || 0);  // 👟 追加
       }
 
       if (data.chatMessages && data.chatMessages.length > chatMessagesStateRef.current.length) {
@@ -758,6 +935,41 @@ function App() {
         objectsCount: (data.foods?.length || 0) + (data.viruses?.length || 0) + (data.ejectedMasses?.length || 0)
       }));
     };
+
+    // 🛍️ ショップ：銃購入結果
+    const handleBuyGunResult = (result) => {
+      if (result.success) {
+        setShopMessage(result.message);
+        setShopMessageType("success");
+        setShowShop(false);
+      } else {
+        setShopMessage(result.message);
+        setShopMessageType("error");
+      }
+      setTimeout(() => { setShopMessage(""); setShopMessageType(""); }, 3000);
+    };
+
+    // 🛍️ ショップ：バリア購入結果
+    const handleBuyBarrierResult = (result) => {
+      if (result.success) {
+        setShopMessage(result.message);
+        setShopMessageType("success");
+        setShowShop(false);
+      } else {
+        setShopMessage(result.message);
+        setShopMessageType("error");
+      }
+      setTimeout(() => { setShopMessage(""); setShopMessageType(""); }, 3000);
+    };
+
+    const handlePlayerBoughtGun = (data) => {
+      console.log(`🛍️ ${data.playerName} bought a gun from shop!`);
+    };
+
+    const handlePlayerBoughtBarrier = (data) => {
+      console.log(`🛍️ ${data.playerName} bought a barrier from shop!`);
+    };
+
 
     const handlePlayerJoined = (data) => {
       setPlayers(prev => ({ ...prev, [data.playerId]: data.player }));
@@ -825,7 +1037,7 @@ function App() {
       console.log('🔫 Gun acquired!', data);
       setHasGun(true);
       setGunBullets(data.bullets);
-      setGunTimeLeft(data.duration);
+      setGunTimeLeft(data.duration || 30000);
     };
 
     // 🔫 銃の期限切れ
@@ -833,7 +1045,7 @@ function App() {
       console.log('🔫 Gun expired');
       setHasGun(false);
       setGunBullets(0);
-      setGunTimeLeft(0);
+
     };
 
     // 🔫 発射成功
@@ -848,29 +1060,76 @@ function App() {
 
     // 🔫 銃アイテム収集通知
     const handleGunItemCollected = (data) => {
+      if (!data || !data.playerName) {
+        console.warn('Invalid gun_item_collected data:', data);
+        return;
+      }
       console.log(`🔫 ${data.playerName} collected gun item!`);
     };
 
-    // 🛍️ ショップ関連のハンドラー（👈 ここに追加）
-    const handleBuyGunResult = (result) => {
-      if (result.success) {
-        setShopMessage(result.message);
-        setShopMessageType("success");
-        setShowShop(false);
-      } else {
-        setShopMessage(result.message);
-        setShopMessageType("error");
+    // 🛡️ バリア取得
+    const handleBarrierAcquired = (data) => {
+      console.log('🛡️ Barrier acquired! (not activated yet)', data);
+      setHasBarrier(true);
+      setBarrierActive(false);  // 🎯 まだ発動していない
+      setBarrierTimeLeft(0);
+    };
+
+    // 🛡️ バリアの期限切れ
+    const handleBarrierExpired = () => {
+      console.log('🛡️ Barrier expired');
+      setHasBarrier(false);
+      setBarrierActive(false);  // 🎯 追加
+      setBarrierTimeLeft(0);
+    };
+
+    // 🛡️ バリア発動成功（🎯 新規追加）
+    const handleBarrierActivated = (data) => {
+      console.log('🛡️ Barrier activated!', data);
+      setBarrierActive(true);
+      setBarrierTimeLeft(data.duration);
+    };
+
+    // 🛡️ バリアアイテム収集通知
+    const handleBarrierItemCollected = (data) => {
+      if (!data || !data.playerName) {
+        console.warn('Invalid barrier_item_collected data:', data);
+        return;
       }
-      setTimeout(() => {
-        setShopMessage("");
-        setShopMessageType("");
-      }, 3000);
+      console.log(`🛡️ ${data.playerName} collected barrier item!`);
     };
 
-    const handlePlayerBoughtGun = (data) => {
-      console.log(`🛍️ ${data.playerName} bought a gun from shop!`);
+    // 👟 スピードアップ取得
+    const handleSpeedUpAcquired = (data) => {
+      console.log('👟 SpeedUp acquired! (not activated yet)', data);
+      setHasSpeedUp(true);
+      setSpeedUpActive(false);
+      setSpeedUpTimeLeft(0);
     };
 
+    // 👟 スピードアップの期限切れ
+    const handleSpeedUpExpired = () => {
+      console.log('👟 SpeedUp expired');
+      setHasSpeedUp(false);
+      setSpeedUpActive(false);
+      setSpeedUpTimeLeft(0);
+    };
+
+    // 👟 スピードアップ発動成功
+    const handleSpeedUpActivated = (data) => {
+      console.log('👟 SpeedUp activated!', data);
+      setSpeedUpActive(true);
+      setSpeedUpTimeLeft(data.duration);
+    };
+
+    // 👟 スピードアップアイテム収集通知
+    const handleSpeedUpItemCollected = (data) => {
+      if (!data || !data.playerName) {
+        console.warn('Invalid speedup_item_collected data:', data);
+        return;
+      }
+      console.log(`👟 ${data.playerName} collected speedup item!`);
+    };
 
     socket.on("virus_risk_reward", handleVirusRiskReward);
     socket.on("connect", handleConnect);
@@ -889,8 +1148,20 @@ function App() {
     socket.on("gun_shot_success", handleGunShotSuccess);
     socket.on("bullet_hit", handleBulletHit);
     socket.on("gun_item_collected", handleGunItemCollected);
-    socket.on("buy_gun_result", handleBuyGunResult);        // 👈 追加
-    socket.on("player_bought_gun", handlePlayerBoughtGun);  // 👈 追加
+    socket.on("barrier_acquired", handleBarrierAcquired);
+    socket.on("barrier_expired", handleBarrierExpired);
+    socket.on("barrier_item_collected", handleBarrierItemCollected);
+    socket.on("barrier_activated", handleBarrierActivated);  // 🎯 新規追加
+    socket.on("speedup_acquired", handleSpeedUpAcquired);
+    socket.on("speedup_expired", handleSpeedUpExpired);
+    socket.on("speedup_activated", handleSpeedUpActivated);
+    socket.on("speedup_item_collected", handleSpeedUpItemCollected);
+    socket.on("buy_gun_result", handleBuyGunResult);
+    socket.on("player_bought_gun", handlePlayerBoughtGun);
+
+    socket.on("buy_barrier_result", handleBuyBarrierResult);
+    socket.on("player_bought_barrier", handlePlayerBoughtBarrier);
+
 
     return () => {
       socket.off("virus_risk_reward");
@@ -910,8 +1181,20 @@ function App() {
       socket.off("gun_shot_success");
       socket.off("bullet_hit");
       socket.off("gun_item_collected");
-      socket.off("buy_gun_result");        // 👈 追加
-      socket.off("player_bought_gun");     // 👈 追加
+      socket.off("barrier_acquired", handleBarrierAcquired);
+      socket.off("barrier_expired", handleBarrierExpired);
+      socket.off("barrier_item_collected", handleBarrierItemCollected);
+      socket.off("barrier_activated", handleBarrierActivated);  // 🎯 新規追加
+      socket.off("speedup_acquired", handleSpeedUpAcquired);
+      socket.off("speedup_expired", handleSpeedUpExpired);
+      socket.off("speedup_activated", handleSpeedUpActivated);
+      socket.off("speedup_item_collected", handleSpeedUpItemCollected);
+      socket.off("buy_gun_result", handleBuyGunResult);
+      socket.off("player_bought_gun", handlePlayerBoughtGun);
+
+      socket.off("buy_barrier_result", handleBuyBarrierResult);
+      socket.off("player_bought_barrier", handlePlayerBoughtBarrier);
+
     };
 
   }, [handlePlayerDeath]);
@@ -947,10 +1230,24 @@ function App() {
         return;
       }
 
-      // 🔫 左クリックで銃を発射
-      if (e.button === 0 && hasGunRef.current) {
+
+
+      // 🎯 左クリックの処理
+      if (e.button === 0) {
         e.preventDefault();
-        shootGun();
+
+        // 🔫 銃を持っている場合は銃を発射
+        if (hasGunRef.current) {
+          shootGun();
+        }
+        // 🛡️ バリアを持っている（まだ発動していない）場合はバリアを発動
+        else if (hasBarrierRef.current && !barrierActiveRef.current) {
+          activateBarrier();
+        }
+        // 👟 スピードアップを持っている（まだ発動していない）場合はスピードアップを発動
+        else if (hasSpeedUpRef.current && !speedUpActiveRef.current) {
+          activateSpeedUp();
+        }
       }
     };
 
@@ -967,7 +1264,7 @@ function App() {
         window.removeEventListener("click", handleMouseClick);
       };
     }
-  }, [gameStarted, updateMousePosition, shootGun, canvasSize]);
+  }, [gameStarted, updateMousePosition, shootGun, activateBarrier, canvasSize]);
 
   // チャット送信関数
   const sendChatMessage = useCallback((message) => {
@@ -991,6 +1288,11 @@ function App() {
     if (!gameStarted) return;
 
     const handleKeyDown = (e) => {
+      if (isTypingRef.current) {
+        console.log('🚫 Typing in chat, ignoring KeyW');
+        return;
+      }
+
       const activeElement = document.activeElement;
       const isInputFocused = activeElement && (
         activeElement.tagName === 'INPUT' ||
@@ -1001,12 +1303,12 @@ function App() {
         return;
       }
 
-      e.preventDefault();
+      const gameKeys = ['Space', 'KeyW', 'KeyF', 'KeyH',
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'KeyE', 'KeyD', 'KeyS', 'KeyB', 'Escape']; // ✅ B と Escape も追加
 
-      // UI切り替え
-      if (e.code === 'KeyH') {
-        toggleUI();
-        return;
+      if (gameKeys.includes(e.code)) {
+        e.preventDefault(); // ✅ ゲームキーのデフォルト動作を防止
       }
 
       // 🛍️ ショップ開閉
@@ -1021,6 +1323,12 @@ function App() {
           setShowShop(false);
           return;
         }
+      }
+
+      // UI切り替え
+      if (e.code === 'KeyH') {
+        toggleUI();
+        return;
       }
 
       switch (e.code) {
@@ -1040,9 +1348,18 @@ function App() {
           break;
 
         case 'KeyW':
+          console.log('🎯 KeyW pressed!', {
+            isTyping: isTypingRef.current,
+            currentW: keysRef.current.w,
+            activeElement: document.activeElement?.tagName
+          });
+
           if (!keysRef.current.w) {
             keysRef.current.w = true;
             performSingleEject();
+            console.log('✅ KeyW executed performSingleEject()');
+          } else {
+            console.log('⚠️ KeyW already pressed');
           }
           break;
 
@@ -1170,6 +1487,7 @@ function App() {
       clearInterval(moveInterval);
     };
   }, [gameStarted, performSingleEject, shootGun, toggleUI, worldSize, showShop]);
+
 
   // === カメラ物理更新 ===
   const updateCameraPhysics = useCallback((deltaTime) => {
@@ -1315,27 +1633,6 @@ function App() {
     return;
   }, []);
 
-  const buyGun = useCallback(() => {
-    if (!socketRef.current?.connected) {
-      setShopMessage("サーバーに接続されていません");
-      setShopMessageType("error");
-      setTimeout(() => setShopMessage(""), 3000);
-      return;
-    }
-
-    socketRef.current.emit("buy_gun", {
-      timestamp: Date.now()
-    });
-
-    console.log("🛍️ Attempting to buy gun...");
-  }, []);
-
-  const getCurrentMass = useCallback(() => {
-    const myPlayer = playersRef.current[myIdRef.current];
-    if (!myPlayer?.cells) return 0;
-    return myPlayer.cells.reduce((sum, cell) => sum + cell.mass, 0);
-  }, []);
-
   // === パーティクル更新 ===
   const updateParticles = useCallback((deltaTime) => {
     const dt = deltaTime * 0.001;
@@ -1380,7 +1677,8 @@ function App() {
 
   // === 色彩補助関数 ===
   const lightenColor = useCallback((color, amount) => {
-    if (color.startsWith('hsl')) {
+    // ✅ colorが文字列かチェック
+    if (color && typeof color === 'string' && color.startsWith('hsl')) {
       const match = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
       if (match) {
         const h = parseInt(match[1]);
@@ -1389,11 +1687,12 @@ function App() {
         return `hsl(${h}, ${s}%, ${l}%)`;
       }
     }
-    return color;
+    return color || '#FFFFFF';  // ✅ デフォルト値を返す
   }, []);
 
   const darkenColor = useCallback((color, amount) => {
-    if (color.startsWith('hsl')) {
+    // ✅ colorが文字列かチェック
+    if (color && typeof color === 'string' && color.startsWith('hsl')) {
       const match = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
       if (match) {
         const h = parseInt(match[1]);
@@ -1402,7 +1701,7 @@ function App() {
         return `hsl(${h}, ${s}%, ${l}%)`;
       }
     }
-    return color;
+    return color || '#000000';  // ✅ デフォルト値を返す
   }, []);
 
   // === セル描画 ===
@@ -1424,16 +1723,17 @@ function App() {
 
     const pulseScale = 1 + animPulse * 0.12 + animGrowth * 0.08;
     const finalRadius = animRadius * pulseScale;
+    const playerColor = player.color || cell.color || '#FF6B6B';
 
     if (animGrowth > 0 || isMyCell) {
       ctx.save();
-      ctx.shadowColor = player.color;
+      ctx.shadowColor = playerColor;
       ctx.shadowBlur = (15 * animGrowth + (isMyCell ? 8 : 0)) / camera.scale;
       ctx.globalAlpha = animGrowth * 0.6 + (isMyCell ? 0.3 : 0);
 
       ctx.beginPath();
       ctx.arc(animX, animY, finalRadius * 1.2, 0, Math.PI * 2);
-      ctx.fillStyle = player.color;
+      ctx.fillStyle = playerColor;
       ctx.fill();
       ctx.restore();
     }
@@ -1450,9 +1750,9 @@ function App() {
       animX, animY, finalRadius
     );
 
-    gradient.addColorStop(0, lightenColor(player.color, 0.4));
-    gradient.addColorStop(0.7, player.color);
-    gradient.addColorStop(1, darkenColor(player.color, 0.2));
+    gradient.addColorStop(0, lightenColor(playerColor, 0.4));
+    gradient.addColorStop(0.7, playerColor);
+    gradient.addColorStop(1, darkenColor(playerColor, 0.2));
 
     ctx.beginPath();
     ctx.arc(animX, animY, finalRadius, 0, Math.PI * 2);
@@ -1467,14 +1767,65 @@ function App() {
       ctx.lineWidth = 4 / camera.scale;
       ctx.shadowColor = '#00AAFF';
       ctx.shadowBlur = 12 * glowIntensity / camera.scale;
+      ctx.beginPath();
+      ctx.arc(animX, animY, finalRadius, 0, Math.PI * 2);
+      ctx.stroke();
     } else {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.strokeStyle = darkenColor(playerColor, 0.3);  // ✅ 修正
       ctx.lineWidth = 2 / camera.scale;
+      ctx.beginPath();
+      ctx.arc(animX, animY, finalRadius, 0, Math.PI * 2);
+      ctx.stroke();
     }
 
-    ctx.beginPath();
-    ctx.arc(animX, animY, finalRadius, 0, Math.PI * 2);
-    ctx.stroke();
+    // 🛡️ バリアエフェクト
+    if (player.barrierActive) {  // ✅ barrierActive を使用
+      ctx.save();
+
+      const barrierPulse = Math.sin(time * 5) * 0.3 + 0.7;
+      const barrierRadius = finalRadius * 1.15;
+
+      ctx.strokeStyle = '#00FFFF';
+      ctx.lineWidth = 4 / camera.scale;
+      ctx.shadowColor = '#00FFFF';
+      ctx.shadowBlur = 15 * barrierPulse / camera.scale;
+      ctx.globalAlpha = barrierPulse;
+
+      ctx.beginPath();
+      ctx.arc(animX, animY, barrierRadius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2 / camera.scale;
+      ctx.shadowBlur = 10 / camera.scale;
+      ctx.globalAlpha = barrierPulse * 0.6;
+
+      ctx.beginPath();
+      ctx.arc(animX, animY, barrierRadius * 0.95, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+
+
+
+    if (finalRadius > 15) {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3 / camera.scale;
+      ctx.font = `bold ${Math.max(12, finalRadius * 0.3) / camera.scale}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const name = player.name || 'Player';
+
+
+      const massText = Math.floor(cell.mass);
+      ctx.font = `${Math.max(10, finalRadius * 0.25) / camera.scale}px Arial`;
+
+
+    }
 
     ctx.restore();
   }, [lightenColor, darkenColor]);
@@ -1527,6 +1878,7 @@ function App() {
     ctx.fill();
 
     ctx.restore();
+
   }, []);
 
   // 🔫 銃アイテムの描画
@@ -1598,6 +1950,88 @@ function App() {
 
     ctx.restore();
   }, []);
+
+  // 🛡️ バリアアイテムの描画（新規追加）
+  const drawBarrierItem = useCallback((ctx, item, camera, time) => {
+    const pulseIntensity = 1 + Math.sin((item.pulsePhase || time * 3)) * 0.15;
+    const finalRadius = item.radius * pulseIntensity;
+
+    ctx.save();
+
+    // 回転
+    ctx.translate(item.x, item.y);
+    ctx.rotate((item.rotation || 0) + time * 0.5);
+    ctx.translate(-item.x, -item.y);
+
+    // 影
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+    ctx.shadowBlur = 8 / camera.scale;
+    ctx.shadowOffsetX = 3 / camera.scale;
+    ctx.shadowOffsetY = 3 / camera.scale;
+
+    // グラデーション
+    const gradient = ctx.createRadialGradient(
+      item.x - finalRadius * 0.3, item.y - finalRadius * 0.3, 0,
+      item.x, item.y, finalRadius
+    );
+    gradient.addColorStop(0, '#00FFFF');
+    gradient.addColorStop(0.6, '#00BFFF');
+    gradient.addColorStop(1, '#0080FF');
+
+    ctx.beginPath();
+    ctx.arc(item.x, item.y, finalRadius, 0, Math.PI * 2);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+
+    // 外枠
+    ctx.strokeStyle = '#00FFFF';
+    ctx.lineWidth = 3 / camera.scale;
+    ctx.stroke();
+
+    // アイコン
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `bold ${finalRadius * 1.2 / camera.scale}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🛡️', item.x, item.y);
+
+    ctx.restore();
+  }, []);
+  // 👟 スピードアップアイテム描画関数（新規追加）
+  const drawSpeedUpItem = useCallback((ctx, item, x, y, radius, time) => {
+    const pulseScale = 1 + Math.sin(time * 0.003 + item.pulsePhase) * 0.1;
+    const drawRadius = radius * pulseScale;
+
+    // 外側の光輪（ピンク色）
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, drawRadius * 1.5);
+    gradient.addColorStop(0, 'rgba(255, 20, 147, 0.3)');
+    gradient.addColorStop(0.5, 'rgba(255, 20, 147, 0.1)');
+    gradient.addColorStop(1, 'rgba(255, 20, 147, 0)');
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, drawRadius * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // メインの円
+    ctx.fillStyle = item.color || '#FF1493';
+    ctx.beginPath();
+    ctx.arc(x, y, drawRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // アイコン
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(item.rotation || 0);
+    ctx.font = `${drawRadius * 1.2}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.icon || '👟', 0, 0);
+    ctx.restore();
+  }, []);
+
 
   // === パーティクル描画 ===
   const drawParticles = useCallback((ctx, camera) => {
@@ -1849,6 +2283,32 @@ function App() {
       }
     }
 
+    // 🛡️ バリアアイテムの描画（新規追加）
+    for (const barrierItem of barrierItemsRef.current) {
+      const dx = Math.abs(barrierItem.x - camera.x);
+      const dy = Math.abs(barrierItem.y - camera.y);
+
+      if (dx < maxViewDistance && dy < maxViewDistance) {
+        drawBarrierItem(ctx, barrierItem, camera, time);
+      }
+    }
+
+    // 👟 スピードアップアイテムの描画（新規追加）
+    for (const speedUpItem of speedUpItemsRef.current) {
+      if (!speedUpItem) continue;
+
+      const screenX = (speedUpItem.x - camera.x) * camera.scale + centerX;
+      const screenY = (speedUpItem.y - camera.y) * camera.scale + centerY;
+      const screenRadius = speedUpItem.radius * camera.scale;
+
+      if (screenX + screenRadius < 0 || screenX - screenRadius > canvasSize.width ||
+        screenY + screenRadius < 0 || screenY - screenRadius > canvasSize.height) {
+        continue;
+      }
+
+      drawSpeedUpItem(ctx, speedUpItem, screenX, screenY, screenRadius, time);
+    }
+
     for (const [id, player] of Object.entries(playersRef.current)) {
       if (!player.cells) continue;
 
@@ -1984,6 +2444,69 @@ function App() {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('🔫', x, y);
+      ctx.restore();
+    }
+
+    // 🛡️ バリアアイテム表示（水色、銃アイテムと同じサイズで目立つように）
+    for (const barrierItem of barrierItemsRef.current) {
+      const x = barrierItem.x * scale;
+      const y = barrierItem.y * scale;
+
+      // 外側の光るエフェクト
+      ctx.save();
+      ctx.shadowColor = '#00FFFF';
+      ctx.shadowBlur = 8;
+
+      // 水色の円
+      ctx.fillStyle = '#00BFFF';
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 外枠
+      ctx.strokeStyle = '#00FFFF';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+
+      // 🛡️ アイコン（小さく表示）
+      ctx.save();
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🛡️', x, y);
+      ctx.restore();
+    }
+    // 👟 スピードアップアイテム表示（ピンク色、銃・バリアと同じサイズで目立つように）
+    for (const speedUpItem of speedUpItemsRef.current) {
+      const x = speedUpItem.x * scale;
+      const y = speedUpItem.y * scale;
+
+      // 外側の光るエフェクト
+      ctx.save();
+      ctx.shadowColor = '#FF1493';
+      ctx.shadowBlur = 8;
+
+      // ピンク色の円
+      ctx.fillStyle = '#FF1493';
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 外枠
+      ctx.strokeStyle = '#FF69B4';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+
+      // 👟 アイコン（小さく表示）
+      ctx.save();
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('👟', x, y);
       ctx.restore();
     }
 
@@ -2356,7 +2879,7 @@ function App() {
             textShadow: "0 2px 4px rgba(0,0,0,0.1)",
             textAlign: "center"
           }}>
-            🦠 Agar.io クローン
+            🦠 セルファイト
           </h1>
 
           <p style={{
@@ -2366,7 +2889,7 @@ function App() {
             fontWeight: "600",
             textAlign: "center"
           }}>
-            🎯 短距離射出システム + 🔫銃アイテム v11.0
+
           </p>
 
           <div style={{
@@ -2383,17 +2906,13 @@ function App() {
               🎮 操作方法
             </div>
             🖱️ マウス: セルがカーソルを追従<br />
-            ⌨️ ESDF/矢印: キーボード移動<br />
+            🖱️ 矢印: キーボード移動<br />
             ⌨️ スペース: 分裂（質量35以上）<br />
-            ⌨️ W: 短距離質量射出（質量38以上）<br />
+            ⌨️ W: 質量射出（質量38以上）<br />
+            ⌨️ B: アイテム購入画面（質量150以上）<br />
             🔫 F/クリック: 銃発射（銃所持時）<br />
-            <div style={{ marginTop: "10px", color: "#FF8C00", fontWeight: "bold" }}>
-              🔫 銃アイテム:<br />
-              ⏱️ 1分ごとに1個スポーン<br />
-              ⏰ 10秒間有効<br />
-              💥 弾が当たると相手の質量-100<br />
-              🎯 最大20発
-            </div>
+            🛡️ F/クリック: バリア発動（バリア所持時）<br />
+
           </div>
 
           <input
@@ -2443,7 +2962,7 @@ function App() {
             }}
           >
             {connectionStatus === "connecting" ? "🔄 接続中..." :
-              connectionStatus === "connected" ? "🔫 銃アイテム Agar.io プレイ" : "❌ 接続エラー"}
+              connectionStatus === "connected" ? "セルファイト プレイ" : "❌ 接続エラー"}
           </button>
 
           {connectionStatus !== "connected" && (
@@ -2586,11 +3105,9 @@ function App() {
             </div>
 
             <div>💪 質量: <strong>{Math.round(myStats.mass).toLocaleString()}</strong></div>
-            <div>📏 半径: <strong>{myStats.radius.toFixed(3)}</strong></div>
             <div>🧬 細胞数: {myStats.cellCount}/16</div>
             <div>⭐ スコア: {myStats.score.toLocaleString()}</div>
-            <div>🔍 ズーム: {(cameraRef.current?.scale || 1).toFixed(2)}x</div>
-            <div>🗺️ 世界: {worldSize.width}×{worldSize.height}</div>
+
 
             {hasGun && (
               <div style={{
@@ -2604,13 +3121,70 @@ function App() {
                   🔫 銃装備中
                 </div>
                 <div style={{ fontSize: "12px" }}>
-                  弾数: {gunBullets} / 20
+                  弾数: {gunBullets} / 10
                 </div>
-                <div style={{ fontSize: "12px" }}>
-                  残り: {Math.ceil(gunTimeLeft / 1000)}秒
+
+              </div>
+            )}
+            {/* 👟 スピードアップUI（保持中・未発動）*/}
+            {hasSpeedUp && !speedUpActive && (
+              <div style={{
+                position: "absolute",
+                bottom: "20px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "rgba(255, 20, 147, 0.95)",
+                color: "#FFF",
+                padding: "15px 30px",
+                borderRadius: "15px",
+                fontSize: "18px",
+                fontWeight: "bold",
+                boxShadow: "0 8px 30px rgba(255, 20, 147, 0.5)",
+                border: "3px solid #FF69B4",
+                display: "flex",
+                alignItems: "center",
+                gap: "15px",
+                zIndex: 1000
+              }}>
+                <span style={{ fontSize: "24px" }}>👟</span>
+                <div>スピードアップ保持中</div>
+                <div style={{ fontSize: "12px", color: "#FFE4E1" }}>
+                  クリック: 発動 (5秒間2倍速)
                 </div>
               </div>
             )}
+
+            {/* 👟 スピードアップUI（発動中）*/}
+            {speedUpActive && (
+              <div style={{
+                position: "absolute",
+                bottom: "20px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "rgba(255, 69, 0, 0.95)",
+                color: "#FFF",
+                padding: "15px 30px",
+                borderRadius: "15px",
+                fontSize: "18px",
+                fontWeight: "bold",
+                boxShadow: "0 8px 30px rgba(255, 69, 0, 0.5)",
+                border: "3px solid #FF4500",
+                display: "flex",
+                alignItems: "center",
+                gap: "15px",
+                zIndex: 1000,
+                animation: "pulse 0.5s ease-in-out infinite"
+              }}>
+                <span style={{ fontSize: "24px" }}>⚡👟</span>
+                <div>
+                  <div>スピードアップ発動中!</div>
+                  <div style={{ fontSize: "14px" }}>
+                    残り: {Math.ceil(speedUpTimeLeft / 1000)}秒
+                  </div>
+                </div>
+              </div>
+            )}
+
 
             <div style={{
               fontSize: "11px",
@@ -2620,22 +3194,9 @@ function App() {
               paddingTop: "12px"
             }}>
               <div>FPS: {debugInfo.fps} | Ping: {debugInfo.ping}ms</div>
-              <div>Players: {debugInfo.players} | Objects: {debugInfo.objectsCount}</div>
-              <div>Memory: {debugInfo.memoryUsage}MB | Render: {debugInfo.renderTime}ms</div>
+              <div>Players: {debugInfo.players}</div>
             </div>
           </div>
-
-          {/* ショップUI */}
-          <ShopUI
-            showShop={showShop}
-            onClose={() => setShowShop(false)}
-            onBuyGun={buyGun}
-            currentMass={getCurrentMass()}
-            hasGun={hasGun}
-          />
-
-          {/* ショップメッセージ */}
-          <ShopMessage message={shopMessage} type={shopMessageType} />
 
           <ChatLayer
             showChat={true}
@@ -2675,10 +3236,8 @@ function App() {
         }}>
           <span style={{ fontSize: "24px" }}>🔫</span>
           <div>
-            <div>弾数: {gunBullets} / 20</div>
-            <div style={{ fontSize: "14px", fontWeight: "normal" }}>
-              残り時間: {Math.ceil(gunTimeLeft / 1000)}秒
-            </div>
+            <div>弾数: {gunBullets} / 10</div>  {/* 🎯 最大10発に変更 */}
+
           </div>
           <div style={{ fontSize: "12px", color: "#333" }}>
             F / クリック: 発射
@@ -2686,44 +3245,120 @@ function App() {
         </div>
       )}
 
-      {!showUI && (
+      {/* 🛡️ バリアUI（新規追加） */}
+      {hasBarrier && !barrierActive && (
         <div style={{
           position: "absolute",
-          top: "20px",
+          bottom: "20px",
           left: "50%",
           transform: "translateX(-50%)",
-          backgroundColor: "rgba(0,0,0,0.7)",
-          color: "white",
-          padding: "8px 16px",
+          backgroundColor: "rgba(0, 191, 255, 0.95)",
+          color: "#FFF",
+          padding: "15px 30px",
           borderRadius: "15px",
-          fontSize: "12px",
-          fontWeight: "500",
-          opacity: 0.7
+          fontSize: "18px",
+          fontWeight: "bold",
+          boxShadow: "0 8px 30px rgba(0, 191, 255, 0.5)",
+          border: "3px solid #00FFFF",
+          display: "flex",
+          alignItems: "center",
+          gap: "15px",
+          zIndex: 1000
         }}>
-          💡 H: 詳細情報とチャット | T/Enter: チャット入力
+          <span style={{ fontSize: "24px" }}>🛡️</span>
+          <div>
+            <div>バリア保持中</div>
+            <div style={{ fontSize: "14px", fontWeight: "normal" }}>
+              左クリックで発動
+            </div>
+          </div>
         </div>
       )}
 
-      {connectionStatus !== "connected" && (
+      {barrierActive && (
         <div style={{
           position: "absolute",
-          top: "50%",
+          bottom: "20px",
           left: "50%",
-          transform: "translate(-50%, -50%)",
-          backgroundColor: "rgba(0,0,0,0.9)",
-          color: "white",
-          padding: "30px",
+          transform: "translateX(-50%)",
+          backgroundColor: "rgba(0, 191, 255, 0.95)",
+          color: "#FFF",
+          padding: "15px 30px",
           borderRadius: "15px",
-          textAlign: "center",
           fontSize: "18px",
-          fontWeight: "600",
-          boxShadow: "0 10px 40px rgba(0, 0, 0, 0.5)"
+          fontWeight: "bold",
+          boxShadow: "0 8px 30px rgba(0, 191, 255, 0.5)",
+          border: "3px solid #00FFFF",
+          display: "flex",
+          alignItems: "center",
+          gap: "15px",
+          zIndex: 1000
         }}>
-          {connectionStatus === "connecting" && "🔄 改善版サーバーに接続中..."}
-          {connectionStatus === "disconnected" && "❌ 接続が切れました"}
+          <div>
+            <div>無敵状態</div>
+            <div style={{ fontSize: "14px", fontWeight: "normal" }}>
+              残り時間: {Math.ceil(barrierTimeLeft / 1000)}秒
+            </div>
+          </div>
         </div>
       )}
-    </div>
+      {
+        !showUI && (
+          <div style={{
+            position: "absolute",
+            top: "20px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            backgroundColor: "rgba(0,0,0,0.7)",
+            color: "white",
+            padding: "8px 16px",
+            borderRadius: "15px",
+            fontSize: "12px",
+            fontWeight: "500",
+            opacity: 0.7
+          }}>
+            💡 H: 詳細情報とチャット | T/Enter: チャット入力 | B: アイテム購入
+          </div>
+        )
+      }
+
+      {
+        connectionStatus !== "connected" && (
+          <div style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            backgroundColor: "rgba(0,0,0,0.9)",
+            color: "white",
+            padding: "30px",
+            borderRadius: "15px",
+            textAlign: "center",
+            fontSize: "18px",
+            fontWeight: "600",
+            boxShadow: "0 10px 40px rgba(0, 0, 0, 0.5)"
+          }}>
+            {connectionStatus === "connecting" && "🔄 改善版サーバーに接続中..."}
+            {connectionStatus === "disconnected" && "❌ 接続が切れました"}
+          </div>
+        )
+      }
+      {/* 🛍️ ショップUI（追加） */}
+      <ShopUI
+        showShop={showShop}
+        onClose={() => setShowShop(false)}
+        currentMass={getCurrentMass()}
+        onBuyGun={buyGun}
+        hasGun={hasGun}
+        onBuyBarrier={buyBarrier}
+        hasBarrier={hasBarrier}
+        barrierActive={barrierActive}
+      />
+
+      {/* 🛍️ ショップメッセージ（追加） */}
+      <ShopMessage message={shopMessage} type={shopMessageType} />
+
+    </div >
   );
 }
 
