@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { TypingBattleLayer } from './components/TypingBattleLayer';
 import { io } from "socket.io-client";
 import { ChatLayer } from './components/ChatLayer';
 
@@ -16,6 +17,7 @@ const GAME_CONSTANTS = {
   FRAME_TIME: 1000 / 60,
   SPLIT_MIN_MASS: 35,
   EJECT_MIN_MASS: 38,
+
 
   // 🎯 射出距離制限の定数
   EJECT_DISTANCE: {
@@ -112,6 +114,8 @@ const ShopUI = ({
   const gunPrice = 100;
   const barrierPrice = 120;
   const MIN_MASS_TO_BUY = 150;  // 🎯 最低購入質量
+
+  const ITEM_BASE_RADIUS = 28;
 
   // 質量チェックを強化
   const canAffordGun = currentMass >= MIN_MASS_TO_BUY && currentMass >= gunPrice;
@@ -370,6 +374,10 @@ function App() {
   const [shopMessage, setShopMessage] = useState("");
   const [shopMessageType, setShopMessageType] = useState("");
 
+  const [sushiItems, setSushiItems] = useState([]); // 寿司の位置
+  const [battleTargets, setBattleTargets] = useState(null); // 対戦相手リスト
+  const [activeBattle, setActiveBattle] = useState(null); // 現在のバトル状況
+
   // === パフォーマンス監視 ===
   const [debugInfo, setDebugInfo] = useState({
     fps: 0,
@@ -418,6 +426,9 @@ function App() {
   const hasSpeedUpRef = useRef(false);
   const speedUpActiveRef = useRef(false);
 
+  // 🍣 寿司アイテム関連の refs（★この行を追加★）
+  const sushiItemsRef = useRef([]);
+
   useEffect(() => { barrierActiveRef.current = barrierActive; }, [barrierActive]);
   useEffect(() => { barrierItemsRef.current = barrierItems; }, [barrierItems]);
   useEffect(() => { hasBarrierRef.current = hasBarrier; }, [hasBarrier]);
@@ -426,6 +437,44 @@ function App() {
   useEffect(() => { speedUpItemsRef.current = speedUpItems; }, [speedUpItems]);
   useEffect(() => { hasSpeedUpRef.current = hasSpeedUp; }, [hasSpeedUp]);
   useEffect(() => { speedUpActiveRef.current = speedUpActive; }, [speedUpActive]);
+
+  // 🍣 寿司アイテムの同期（★この行を追加★）
+  useEffect(() => { sushiItemsRef.current = sushiItems; }, [sushiItems]);
+
+  // 🎯 質量監視：0以下でゲームオーバー
+  useEffect(() => {
+    if (!gameStarted || !myId || gameOver) return;
+
+    const myPlayer = players[myId];
+    if (!myPlayer?.cells) return;
+
+    // 現在の総質量を計算
+    const totalMass = myPlayer.cells.reduce((sum, cell) => sum + (cell.mass || 0), 0);
+
+    // 質量が0以下になったらゲームオーバー
+    if (totalMass <= 0) {
+      console.log('💀 Game Over: Mass depleted to 0');
+
+      setDeathInfo({
+        killedBy: '質量枯渇',
+        finalMass: 0,
+        finalScore: myPlayer.score || 0
+      });
+
+      setGameOver(true);
+      setGameStarted(false);
+      setIsAlive(false);
+
+      // サーバーに通知（オプション）
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('mass_depleted', {
+          playerId: myId,
+          timestamp: Date.now()
+        });
+      }
+    }
+  }, [players, myId, gameStarted, gameOver]);
+
 
   // === アニメーション状態 ===
   const animationState = useRef({
@@ -723,6 +772,51 @@ function App() {
   }, [speedUpActive, speedUpTimeLeft]);
 
 
+  // 🎯 NEW: 質量監視とゲームオーバー処理
+  useEffect(() => {
+    // ゲーム開始前、既にゲームオーバー、プレイヤーIDなしの場合はスキップ
+    if (!gameStarted || !myId || gameOver) return;
+
+    const myPlayer = players[myId];
+
+    // プレイヤーデータまたはセルがない場合はスキップ
+    if (!myPlayer?.cells || myPlayer.cells.length === 0) return;
+
+    // 現在の総質量を計算
+    const totalMass = myPlayer.cells.reduce((sum, cell) => sum + (cell.mass || 0), 0);
+
+    // 🚨 質量が0以下になったらゲームオーバー
+    if (totalMass <= 0) {
+      console.log('💀 Game Over: Mass depleted to 0 or below');
+
+      // 死亡情報を設定
+      setDeathInfo({
+        killedBy: '質量枯渇',
+        finalMass: 0,
+        finalScore: myPlayer.score || 0
+      });
+
+      // ゲームオーバー状態に移行
+      setGameOver(true);
+      setGameStarted(false);
+      setIsAlive(false);
+
+      // サーバーに通知（サーバー側で統計記録などが必要な場合）
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('mass_depleted', {
+          playerId: myId,
+          finalMass: totalMass,
+          timestamp: Date.now()
+        });
+      }
+
+      // ユーザーに通知
+      setTimeout(() => {
+        alert('質量が0になりました。ゲームオーバー！');
+      }, 100);
+    }
+  }, [players, myId, gameStarted, gameOver]);
+
   // === ウィンドウリサイズ最適化 ===
   useEffect(() => {
     let resizeTimeout;
@@ -870,6 +964,12 @@ function App() {
       // 👟 スピードアップアイテムの初期化
       if (data.speedUpItems) setSpeedUpItems(data.speedUpItems);
 
+      // 🍣 寿司アイテムの初期化（★この行を追加★）
+      if (data.sushiItems) {
+        console.log("🍣 Received sushi items:", data.sushiItems);
+        setSushiItems(data.sushiItems);
+      }
+
       // ✅ 自分の状態を初期化（修正版）
       const myPlayer = data.players?.[data.myId];
       if (myPlayer) {
@@ -920,6 +1020,11 @@ function App() {
 
       // 👟 スピードアップアイテムの更新（新規追加）
       if (data.speedUpItems) setSpeedUpItems(data.speedUpItems);
+
+      // 🍣 寿司アイテムの更新（★この行を追加★）
+      if (data.sushiItems) {
+        setSushiItems(data.sushiItems);
+      }
 
       // 自分の銃の状態を更新
       const myPlayer = data.players?.[myIdRef.current];
@@ -1037,6 +1142,52 @@ function App() {
     const handleChatError = (error) => {
       setChatError(error.message || "チャットエラー");
       setTimeout(() => setChatError(""), 3000);
+    };
+
+    // ▼▼▼ ここから追加：寿司・バトル関連のイベントハンドラ ▼▼▼
+
+    // 🍣 寿司の位置更新
+    const handleSushiUpdate = (items) => {
+      setSushiItems(items);
+    };
+
+    // 📋 対戦相手選択画面の表示
+    const handleOpenBattleSelector = (targets) => {
+      setBattleTargets(targets);
+    };
+
+    // ⚔️ バトル開始
+    const handleBattleStart = (data) => {
+      setBattleTargets(null); // 選択画面を閉じる
+      setActiveBattle({
+        ...data,
+        myHp: 100, oppHp: 100,
+        myProgress: 0, oppProgress: 0
+      });
+    };
+
+    // ⚔️ バトル状況更新
+    const handleBattleUpdate = (battleData) => {
+      // 自分が p1 なのか p2 なのか判定して、自分と相手のHP/進捗をセット
+      const isP1 = (socket.id === battleData.p1);
+
+      setActiveBattle(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          myHp: isP1 ? battleData.p1Hp : battleData.p2Hp,
+          oppHp: isP1 ? battleData.p2Hp : battleData.p1Hp,
+          myProgress: isP1 ? battleData.p1Progress : battleData.p2Progress,
+          oppProgress: isP1 ? battleData.p2Progress : battleData.p1Progress,
+        };
+      });
+    };
+
+    // 🏁 バトル終了
+
+    const handleBattleEnd = ({ result }) => {
+      alert(result === 'win' ? "勝利！🍣" : "敗北... 質量500減少");
+      setActiveBattle(null);
     };
 
     // 🔫 銃アイテム取得
@@ -1168,7 +1319,63 @@ function App() {
 
     socket.on("buy_barrier_result", handleBuyBarrierResult);
     socket.on("player_bought_barrier", handlePlayerBoughtBarrier);
+    // useEffect の中（socket.on が並んでいる場所）に追加
 
+    // 🍣 寿司の位置更新
+    socket.on('sushi_update', (items) => {
+      setSushiItems(items);
+    });
+
+    // 📋 対戦相手選択画面の表示
+    socket.on('open_battle_selector', (targets) => {
+      setBattleTargets(targets);
+    });
+
+    // ⚔️ バトル開始
+    socket.on('battle_start', (data) => {
+      setBattleTargets(null); // 選択画面を閉じる
+      setActiveBattle({
+        ...data,
+        myHp: 100, oppHp: 100,
+        myProgress: 0, oppProgress: 0
+      });
+    });
+
+    // ⚔️ バトル状況更新
+    // App.jsx の useEffect 内
+    // App.jsx の socket.on('battle_update')
+    socket.on('battle_update', (data) => {
+      const isP1 = socketRef.current.id === data.p1;
+      setActiveBattle({
+        battleId: data.id,
+        // 💡 サーバーから届いた最新の word をセットすることで、次の単語に切り替わります
+        word: data.word,
+        myProgress: isP1 ? data.p1Progress : data.p2Progress,
+        oppProgress: isP1 ? data.p2Progress : data.p1Progress,
+        myHp: isP1 ? data.p1Hp : data.p2Hp,
+        oppHp: isP1 ? data.p2Hp : data.p1Hp
+      });
+    });
+    // App.jsx 内の useEffect 内
+    socket.on('battle_end', (data) => {
+      const isWinner = socketRef.current.id === data.winnerId;
+
+      if (isWinner) {
+        alert("勝利！ 相手の質量を吸収しました！🎉");
+      } else {
+        // 🎯 敗北時の新処理：質量500減少のみ（ゲームは続行）
+        alert("敗北... 質量500が減少しました");
+
+        // ❌ 以下の行を削除またはコメントアウト
+        // setGameStarted(false);  // ← この行を削除
+
+        // プレイヤーはゲーム画面に残り、質量500減少した状態で続行
+        console.log("⚠️ Battle lost: -500 mass penalty applied by server");
+      }
+
+      // バトル画面を閉じる（共通処理）
+      setActiveBattle(null);
+    });
 
     return () => {
       socket.off("virus_risk_reward");
@@ -1201,6 +1408,12 @@ function App() {
 
       socket.off("buy_barrier_result", handleBuyBarrierResult);
       socket.off("player_bought_barrier", handlePlayerBoughtBarrier);
+
+      socket.off("sushi_update");
+      socket.off("open_battle_selector");
+      socket.off("battle_start");
+      socket.off("battle_update");
+      socket.off("battle_end");
 
     };
 
@@ -1308,6 +1521,18 @@ function App() {
 
       if (isInputFocused) {
         return;
+      }
+
+      // バトル中の場合
+      if (activeBattle) {
+        // アルファベットのみ送信
+        if (/^[a-zA-Z]$/.test(e.key)) {
+          socketRef.current.emit('battle_type', {
+            battleId: activeBattle.battleId,
+            char: e.key
+          });
+        }
+        return; // 移動処理などをさせない
       }
 
       const gameKeys = ['Space', 'KeyW', 'KeyF', 'KeyH',
@@ -1493,7 +1718,7 @@ function App() {
       window.removeEventListener('keyup', handleKeyUp, false);
       clearInterval(moveInterval);
     };
-  }, [gameStarted, performSingleEject, shootGun, toggleUI, worldSize, showShop]);
+  }, [gameStarted, performSingleEject, shootGun, toggleUI, worldSize, showShop, activeBattle]);
 
 
   // === カメラ物理更新 ===
@@ -2039,6 +2264,84 @@ function App() {
     ctx.restore();
   }, []);
 
+  // 🍣 寿司アイテム（円＋グラデ＋発光＋キラキラ）描画：ワールド座標版
+  const drawSushiItem = useCallback((ctx, sushi, camera, time) => {
+    const x = sushi.x;
+    const y = sushi.y;
+
+    // ✅ サイズ統一：他アイテム同様に「半径」を基準に描く
+    // サーバは radius=30。無ければ30。
+    const baseRadius = sushi.radius ?? 8.48;
+
+    // ぷるぷる（他アイテムの pulsePhase が無いので x/y から疑似的に作る）
+    const pulse = 1 + Math.sin(time * 4 + (x + y) * 0.01) * 0.08;
+    const r = baseRadius * pulse;
+
+    ctx.save();
+
+    // === 外側の発光リング（キラキラ感） ===
+    ctx.beginPath();
+    ctx.arc(x, y, r * 1.35, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 120, 180, 0.12)";
+    ctx.fill();
+
+    // === 本体（円＋グラデーション）===
+    const gradient = ctx.createRadialGradient(
+      x - r * 0.35, y - r * 0.35, 0,
+      x, y, r
+    );
+    gradient.addColorStop(0, "rgba(255, 255, 255, 0.95)");
+    gradient.addColorStop(0.55, "rgba(255, 140, 140, 0.85)");
+    gradient.addColorStop(1, "rgba(255, 80, 80, 0.55)");
+
+    ctx.shadowColor = "rgba(255, 80, 120, 0.55)";
+    ctx.shadowBlur = 18 / camera.scale;
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // 縁取り
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+    ctx.lineWidth = 1.2 / camera.scale;
+    ctx.stroke();
+
+    // ✅ サイズ統一の核心：絵文字フォントをradius連動にする（固定60pxを廃止）
+    const fontSize = Math.round(baseRadius * 1.6); // 30→48px
+    ctx.font = `${fontSize}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.fillText("🍣", x, y);
+
+
+    // === キラキラ粒子（簡易：3点）===
+    const sparkleCount = 3;
+    for (let i = 0; i < sparkleCount; i++) {
+      const a = time * 3 + i * (Math.PI * 2 / sparkleCount);
+      const sx = x + Math.cos(a) * r * 1.1;
+      const sy = y + Math.sin(a) * r * 1.1;
+      ctx.beginPath();
+      ctx.arc(sx, sy, (2.2 + i) / camera.scale, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fill();
+    }
+
+    // === 絵文字（中心）===
+    ctx.font = `${Math.floor(r * 1.6)}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#fff";
+    ctx.fillText("🍣", x, y);
+
+    ctx.restore();
+  }, []);
+
+
+
 
   // === パーティクル描画 ===
   const drawParticles = useCallback((ctx, camera) => {
@@ -2300,6 +2603,35 @@ function App() {
       }
     }
 
+    // ▼▼▼ 🍣 寿司アイテムの描画 (ここに追加) ▼▼▼
+    if (sushiItems && sushiItems.length > 0) {
+      for (const sushi of sushiItems) {
+        // 画面外なら描画しない（軽量化）
+        const dx = Math.abs(sushi.x - camera.x);
+        const dy = Math.abs(sushi.y - camera.y);
+
+        // maxViewDistance はこの関数の上の方で定義されているはずです
+        if (dx < maxViewDistance && dy < maxViewDistance) {
+          ctx.save();
+          // 寿司のサイズ (半径30くらいなので、文字サイズは60px程度に設定)
+          // 🍣 寿司アイテムの描画（統一版）
+          if (sushiItems && sushiItems.length > 0) {
+            for (const sushi of sushiItems) {
+              const dx = Math.abs(sushi.x - camera.x);
+              const dy = Math.abs(sushi.y - camera.y);
+
+              if (dx < maxViewDistance && dy < maxViewDistance) {
+                drawSushiItem(ctx, sushi, camera, time);
+              }
+            }
+          }
+
+          ctx.restore();
+        }
+      }
+    }
+    // ▲▲▲ 追加ここまで ▲▲▲
+
     // 👟 スピードアップアイテムの描画（新規追加）
     for (const speedUpItem of speedUpItemsRef.current) {
       if (!speedUpItem) continue;
@@ -2375,7 +2707,8 @@ function App() {
 
     animationFrameRef.current = requestAnimationFrame(draw);
   }, [gameStarted, canvasSize, setupCanvas, updateCameraPhysics, updateCellAnimations, updateParticles,
-    drawEnhancedCell, drawVirus, drawGunItem, drawBullet, drawParticles, drawEnhancedText, lightenColor]);
+    drawEnhancedCell, drawVirus, drawGunItem, drawBullet, drawParticles, drawEnhancedText, lightenColor, sushiItems, drawSushiItem,
+  ]);
 
   // === ミニマップ描画 ===
   const drawMinimap = useCallback(() => {
@@ -2514,6 +2847,34 @@ function App() {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('👟', x, y);
+      ctx.restore();
+    }
+
+    // 🍣 寿司アイテムの描画
+    for (const sushi of sushiItemsRef.current) {
+      const x = sushi.x * scale;
+      const y = sushi.y * scale;
+
+      ctx.save();
+      ctx.shadowColor = '#FF69B4';
+      ctx.shadowBlur = 8;
+
+      ctx.fillStyle = '#FF69B4';
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#FF1493';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+
+      ctx.save();
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🍣', x, y);
       ctx.restore();
     }
 
@@ -2745,6 +3106,8 @@ function App() {
             💀 ゲームオーバー
           </h1>
 
+
+
           <div style={{
             color: "#555",
             marginBottom: "30px",
@@ -2757,6 +3120,13 @@ function App() {
           }}>
             <div style={{ fontSize: "18px", fontWeight: "bold", color: "#333", marginBottom: "15px" }}>
               {deathInfo.killedBy ? `${deathInfo.killedBy} に倒されました` : "敗北しました"}
+
+            </div>
+            <div style={{ fontSize: '24px', marginBottom: '10px' }}>
+              {deathInfo.killedBy === '質量枯渇'
+                ? '質量が0になりました'
+                : `殺された相手: ${deathInfo.killedBy}`
+              }
             </div>
             <div style={{ fontSize: "14px", color: "#666" }}>
               最終質量: <strong>{Math.round(deathInfo.finalMass)}</strong>
@@ -2912,11 +3282,11 @@ function App() {
             <div style={{ marginBottom: "10px", fontWeight: "bold", color: "#333" }}>
               🎮 操作方法
             </div>
-            🖱️ マウス: セルがカーソルを追従<br />
-            🖱️ 矢印: キーボード移動<br />
+            🖱️ マウス: セルがカーソルを追従して移動<br />
             ⌨️ スペース: 分裂（質量35以上）<br />
             ⌨️ W: 質量射出（質量38以上）<br />
             ⌨️ B: アイテム購入画面（質量150以上）<br />
+            ⌨️ H: 詳細情報とチャットを閉じる<br />
             🔫 F/クリック: 銃発射（銃所持時）<br />
             🛡️ F/クリック: バリア発動（バリア所持時）<br />
 
@@ -3365,7 +3735,34 @@ function App() {
       {/* 🛍️ ショップメッセージ（追加） */}
       <ShopMessage message={shopMessage} type={shopMessageType} />
 
-    </div >
+      {/* 📋 プレイヤー選択プルダウン */}
+      {battleTargets && ( /* ※注意: 前回のコードで変数名を battleTargets にしている場合はここを修正 */
+        <div style={{
+          position: 'absolute', top: '30%', left: '50%', transform: 'translate(-50%, -50%)',
+          background: 'white', padding: '20px', borderRadius: '10px', textAlign: 'center',
+          zIndex: 1000, boxShadow: '0 4px 15px rgba(0,0,0,0.3)'
+        }}>
+          <h3 style={{ color: 'black', margin: '0 0 10px 0' }}>⚔️ 対戦相手を選択！</h3>
+          <select id="targetSelect" style={{ padding: '5px', fontSize: '16px', marginBottom: '10px' }}>
+            {battleTargets.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <br />
+          <button
+            style={{ background: '#ff9900', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' }}
+            onClick={() => {
+              const targetId = document.getElementById('targetSelect').value;
+              socketRef.current.emit('start_battle', targetId);
+            }}>決定</button>
+        </div>
+      )}
+
+      {/* ⚔️ タイピングバトル画面を独立したレイヤーとして配置 */}
+      <TypingBattleLayer
+        activeBattle={activeBattle}
+        socket={socketRef.current}
+      />
+
+    </div> // これが App コンポーネントの最後の閉じタグ
   );
 }
 

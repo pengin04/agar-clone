@@ -59,6 +59,34 @@ export const ChatLayer = React.memo(({
     socketConnected,
     myId
 }) => {
+
+    // 🎯 ここに追加
+    const messagesContainerRef = React.useRef(null);
+
+    const messagesEndRef = React.useRef(null);  // 🎯 追加: 最下部マーカー
+
+    // 🎯 改善版: メッセージ更新時に確実にスクロール
+    useEffect(() => {
+        // 方法1: scrollTopを使用
+        if (messagesContainerRef.current) {
+            const container = messagesContainerRef.current;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // 方法2: scrollIntoViewを使用（バックアップ）
+        if (messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
+    }, [chatMessages, chatMessages.length]); // 🎯 依存配列を強化
+
+    // 🎯 追加: showChatがtrueになった時もスクロール
+    useEffect(() => {
+        if (showChat && messagesContainerRef.current) {
+            setTimeout(() => {
+                messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+            }, 100);
+        }
+    }, [showChat]);
     // キーボード処理はそのまま
     useEffect(() => {
         const handleKeyDown = (e) => {
@@ -100,11 +128,11 @@ export const ChatLayer = React.memo(({
         <div
             data-chat-layer="true"
             style={{
-                position: "absolute",
-                top: "360px",   // ← 変更: 詳細情報パネルの下（高さに応じて調整が必要）
-                left: "20px",   // ← 左側に配置
-                width: "360px", // ← 変更: 詳細情報と同じ幅に
-                height: "260px", // ← 変更: 横長にするため高さを低く
+                position: "fixed",  // 🎯 absolute → fixed に変更
+                bottom: "20px",     // 🎯 top → bottom に変更（画面下部に固定）
+                left: "20px",
+                width: "360px",
+                height: "260px",
                 backgroundColor: "rgba(255, 255, 255, 0.95)",
                 borderRadius: "15px",
                 boxShadow: "0 10px 40px rgba(0, 0, 0, 0.15)",
@@ -119,7 +147,7 @@ export const ChatLayer = React.memo(({
         >
             {/* ヘッダー */}
             <div style={{
-                padding: "10px 16px", // ← パディングを少し小さく
+                padding: "10px 16px",
                 backgroundColor: "rgba(33, 150, 243, 0.1)",
                 borderBottom: "1px solid rgba(0, 0, 0, 0.1)",
                 display: "flex",
@@ -136,12 +164,15 @@ export const ChatLayer = React.memo(({
             </div>
 
             {/* メッセージ表示 */}
-            <div style={{
-                flex: 1,
-                padding: "6px", // ← パディングを小さく
-                overflowY: "auto",
-                maxHeight: "140px" // ← 高さ調整
-            }}>
+            <div
+                ref={messagesContainerRef}
+                style={{
+                    flex: 1,
+                    padding: "6px",
+                    overflowY: "auto",
+                    maxHeight: "140px"
+                }}
+            >
                 {chatMessages.length === 0 ? (
                     <div style={{
                         textAlign: "center",
@@ -154,15 +185,18 @@ export const ChatLayer = React.memo(({
                         T/Enterで入力開始
                     </div>
                 ) : (
-                    chatMessages.map((message) => (
-                        <ChatMessage key={message.id} message={message} myId={myId} />
-                    ))
+                    <>
+                        {chatMessages.map((message) => (
+                            <ChatMessage key={message.id} message={message} myId={myId} />
+                        ))}
+                        <div ref={messagesEndRef} style={{ height: '1px' }} />
+                    </>
                 )}
             </div>
 
             {/* 入力エリア */}
             <div style={{
-                padding: "8px", // ← パディングを小さく
+                padding: "8px",
                 borderTop: "1px solid rgba(0, 0, 0, 0.1)",
                 backgroundColor: "rgba(0, 0, 0, 0.02)"
             }}>

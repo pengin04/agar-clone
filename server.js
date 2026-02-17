@@ -62,8 +62,20 @@ const GAME_CONSTANTS = {
     RADIUS_TO_MASS: (radius) => Math.PI * radius * radius,
 
     SPEED_FORMULA: (mass) => {
-        const baseSpeed = 60 / Math.pow(mass, 0.4);
-        return Math.max(baseSpeed, 8);
+        const MIN_MASS = 20;
+        const MAX_MASS = 5000;
+
+        const MAX_SPEED = 15;  // mass=20 のとき
+        const MIN_SPEED = 2;  // mass=10000 のとき
+
+        // 0..1 に正規化（20→0, 10000→1）
+        const t = Math.min(1, Math.max(0, (mass - MIN_MASS) / (MAX_MASS - MIN_MASS)));
+
+        // カーブ（現状の「0.4」に近い減衰感を残す）
+        const curve = Math.pow(t, 0.4);
+
+        // 20で9、10000で3に補間
+        return MAX_SPEED + (MIN_SPEED - MAX_SPEED) * curve;
     },
 
     SPLIT_MIN_MASS: 35,
@@ -120,6 +132,11 @@ const GAME_CONSTANTS = {
     SPEEDUP_DURATION: 5000,              // 5秒間
     SPEEDUP_MULTIPLIER: 2.0,             // スピード2倍
 
+    // 🍣 寿司アイテム
+    SUSHI_ITEM_SPAWN_INTERVAL: 60000,    // 60秒（1分）ごと
+    SUSHI_ITEM_MAX_COUNT: 2,             // 最大2個
+
+
     // ===== 🛍️ SHOP（追加）=====
     SHOP_GUN_PRICE: 100,
     SHOP_GUN_DURATION: 30000,
@@ -132,6 +149,30 @@ const GAME_CONSTANTS = {
     SHOP_BARRIER_DURATION: 10000,
 
 };
+
+// server.js の上部、GAME_CONSTANTS 付近に追加
+// 全て小文字に書き換えます
+const TYPING_WORDS = [
+    "sushi", "tempura", "samurai", "ninja", "tokyo",
+    "ramen", "wasabi", "geisha", "katana", "kimono",
+    "sakura", "matcha", "teriyaki", "yakitori", "bento"
+];
+
+// バトルクラス
+class TypingBattle {
+    constructor(p1Id, p2Id) {
+        this.id = Math.random().toString(36).substr(2, 9);
+        this.p1 = p1Id; // 攻撃側
+        this.p2 = p2Id; // 防衛側
+        this.word = TYPING_WORDS[Math.floor(Math.random() * TYPING_WORDS.length)];
+        this.p1Progress = 0; // 何文字打ったか
+        this.p2Progress = 0;
+        this.p1Hp = 1000;
+        this.p2Hp = 1000;
+        this.maxHp = 1000; // ゲージ計算用に最大値を保持;
+        this.active = true;
+    }
+}
 
 // ===== 🛍️ SHOP HELPERS（追加）=====
 function getTotalMass(player) {
@@ -547,7 +588,10 @@ class PlayerCell extends GameObject {
     }
 
     ejectMass(angle, mouseDirection = null) {
-        if (this.mass < GAME_CONSTANTS.EJECT_MIN_MASS) return null;
+        if (this.mass < GAME_CONSTANTS.EJECT_MIN_MASS) {
+            console.log(`❌ Cell mass too low: ${this.mass} < ${GAME_CONSTANTS.EJECT_MIN_MASS}`);
+            return null;
+        }
 
         const ejectRatio = 0.18;
         const minEject = 12;
@@ -590,9 +634,12 @@ class PlayerCell extends GameObject {
         this.vx -= Math.cos(finalAngle) * recoilStrength * recoilRatio;
         this.vy -= Math.sin(finalAngle) * recoilStrength * recoilRatio;
 
+        console.log(`✅ EjectedMass created: mass=${ejectAmount}, pos=(${ejectX.toFixed(1)}, ${ejectY.toFixed(1)}), velocity=(${ejectedMass.vx.toFixed(1)}, ${ejectedMass.vy.toFixed(1)})`);
+
         return ejectedMass;
     }
 }
+
 
 class Food extends GameObject {
     constructor(x, y, mass) {
@@ -645,8 +692,8 @@ class Food extends GameObject {
 class EjectedMass extends GameObject {
     constructor(x, y, mass) {
         super(x, y, mass || GAME_CONSTANTS.EJECT_MASS, 'ejectedMass');
-        this.color = '#FFFF00';
-        this.life = 10000;
+        this.color = '#FFFF00';  // 黄色
+        this.life = 10000;  // 10秒間存在
         this.originalLife = this.life;
         this.nutritionalValue = Math.floor(mass * 0.9);
 
@@ -663,21 +710,18 @@ class EjectedMass extends GameObject {
     update(deltaTime) {
         super.update(deltaTime);
 
+        // 摩擦
         const friction = 0.80;
         this.vx *= friction;
         this.vy *= friction;
 
+        // 速度が遅くなったら停止
         if (Math.abs(this.vx) < 10 && Math.abs(this.vy) < 10) {
             this.vx = 0;
             this.vy = 0;
         }
 
-        // 🎯 速度が停止したら消滅
-        if (Math.abs(this.vx) < 10 && Math.abs(this.vy) < 10) {
-            this.toDelete = true;
-            console.log('🔫 Bullet stopped and deleted');
-        }
-
+        // 寿命管理
         this.life -= deltaTime;
         if (this.life <= 0) {
             this.toDelete = true;
@@ -968,6 +1012,23 @@ class BarrierItem extends GameObject {
     }
 }
 
+// 修正後
+class SushiItem extends GameObject {
+    constructor(x, y) {
+        super(x, y, 50, 'sushiItem');  // ✅ 他のアイテムと同じ mass: 50
+        this.icon = '🍣';
+        this.pulsePhase = Math.random() * Math.PI * 2;
+        this.rotation = 0;
+        this.rotationSpeed = 0.02;
+    }
+
+    update(deltaTime) {
+        super.update(deltaTime);
+        this.rotation += this.rotationSpeed * deltaTime * 0.001;
+        this.pulsePhase += deltaTime * 0.003;
+    }
+}
+
 // 👟 SpeedUpItem クラス
 class SpeedUpItem extends GameObject {
     constructor(x, y) {
@@ -1014,6 +1075,14 @@ class EnhancedAgarServer {
         // 👟 スピードアップアイテム関連
         this.speedUpItems = new Map();
         this.lastSpeedUpItemSpawn = Date.now();
+
+        this.sushiItems = new Map();
+        this.lastSushiSpawn = Date.now();
+
+
+
+        // ⚔️ タイピングバトル管理
+        this.battles = {};
 
         // 🦠 ウイルス自動スポーン関連
         this.lastVirusSpawn = Date.now();
@@ -1089,6 +1158,13 @@ class EnhancedAgarServer {
             this.createVirus();
         }
 
+        // 🍣 初期寿司アイテム（最大数まで）
+        for (let i = 0; i < GAME_CONSTANTS.SUSHI_ITEM_MAX_COUNT; i++) {
+            this.createSushiItem();
+        }
+        console.log(`🍣 Sushi initialized: ${this.sushiItems.size} items`);
+
+
         console.log(`🍎 Foods: ${this.gameObjects.size} | 🦠 Viruses: ${this.viruses.size}`);
         console.log(`💬 Chat system initialized`);
     }
@@ -1112,6 +1188,29 @@ class EnhancedAgarServer {
 
         return virus;
     }
+
+    createSushiItem() {
+        if (this.sushiItems.size >= GAME_CONSTANTS.SUSHI_ITEM_MAX_COUNT) {
+            return null;
+        }
+
+        let x, y;
+        let attempts = 0;
+        const maxAttempts = 50;
+
+        do {
+            x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 100) + 50;
+            y = Math.random() * (GAME_CONSTANTS.WORLD_HEIGHT - 100) + 50;
+            attempts++;
+        } while (this.isTooCloseToOthers(x, y, 80) && attempts < maxAttempts);
+
+        const sushiItem = new SushiItem(x, y);
+        this.sushiItems.set(sushiItem.id, sushiItem);
+        console.log(`🍣 Sushi spawned at (${x.toFixed(0)}, ${y.toFixed(0)}), Total: ${this.sushiItems.size}`);
+
+        return sushiItem;
+    }
+
     // 5. createGunItem メソッドを追加（createVirus の後に追加）F
     createGunItem() {
         const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 200) + 100;
@@ -1149,6 +1248,140 @@ class EnhancedAgarServer {
 
         console.log(`👟 SpeedUp item spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
         return speedUpItem;
+    }
+
+    // --- ▼▼▼ ここからメソッド追加 ▼▼▼ ---
+
+    // 🍣 寿司アイテム生成
+    // EnhancedAgarServer クラス内
+
+    // EnhancedAgarServer クラス内
+
+    createSushiItem() {
+        const x = Math.random() * (GAME_CONSTANTS.WORLD_WIDTH - 200) + 100;
+        const y = Math.random() * (GAME_CONSTANTS.WORLD_HEIGHT - 200) + 100;
+
+        const sushi = new SushiItem(x, y);
+
+        // バリアと同じくMapにセット
+        this.sushiItems.set(sushi.id, sushi);
+
+        // ゲーム全体のオブジェクト管理にもセット（これでバリアと同じ扱いになる）
+        this.gameObjects.set(sushi.id, sushi);
+
+        console.log(`🍣 Sushi spawned at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+        return sushi;
+    }
+
+    // ⚔️ バトル開始処理
+    handleStartBattle(attackerId, defenderId) {
+        const attacker = this.players.get(attackerId);
+        const defender = this.players.get(defenderId);
+
+        if (attacker && defender) {
+            const battle = new TypingBattle(attackerId, defenderId);
+            this.battles[battle.id] = battle;
+
+            const commonData = { battleId: battle.id, word: battle.word };
+
+            // 攻撃側（自分）へ通知
+            io.to(attackerId).emit('battle_start', {
+                ...commonData, opponentName: defender.name, role: 'attacker'
+            });
+            // 防衛側（相手）へ通知
+            io.to(defenderId).emit('battle_start', {
+                ...commonData, opponentName: attacker.name, role: 'defender'
+            });
+
+            console.log(`⚔️ Battle started: ${attacker.name} vs ${defender.name}`);
+        }
+    }
+
+    handleBattleType(socketId, battleId, char) {
+        // 💡 battles が Map か Object かによってアクセス方法を変える
+        // もし constructor で this.battles = {} としているなら [battleId] でOK
+        const battle = this.battles[battleId];
+        if (!battle || !battle.active) return;
+
+        const isP1 = (socketId === battle.p1);
+        const currentProgress = isP1 ? battle.p1Progress : battle.p2Progress;
+
+        // 💡 現在のターゲット文字を取得
+        const targetCharRaw = battle.word[currentProgress];
+        if (!targetCharRaw) return;
+
+        // 💡 【重要】比較の瞬間に、サーバーの文字も、入力された文字も、両方小文字にする
+        const targetChar = targetCharRaw.toLowerCase();
+        const inputChar = char.toLowerCase();
+
+        // デバッグログ：ここが一致しているのに進まないか確認
+        console.log(`[Typing] Player:${socketId.slice(0, 4)} | Input:${inputChar} | Target:${targetChar}`);
+
+        if (inputChar === targetChar) {
+            if (isP1) {
+                battle.p1Progress++;
+                battle.p2Hp -= 20;
+            } else {
+                battle.p2Progress++;
+                battle.p1Hp -= 20;
+            }
+
+            // ✨ 追加：単語を打ち終えたら次の単語へ
+            const isP1Finished = isP1 && battle.p1Progress >= battle.word.length;
+            const isP2Finished = !isP1 && battle.p2Progress >= battle.word.length;
+
+            if (isP1Finished || isP2Finished) {
+                // 新しい単語をランダムに選ぶ
+                const nextWord = TYPING_WORDS[Math.floor(Math.random() * TYPING_WORDS.length)];
+                battle.word = nextWord;
+                // 進捗をリセット
+                battle.p1Progress = 0;
+                battle.p2Progress = 0;
+                console.log(`🆕 Next Word: ${nextWord}`);
+            }
+
+            // 勝敗・更新通知（既存のコード）
+            let winnerId = null;
+            if (battle.p2Hp <= 0) winnerId = battle.p1;
+            if (battle.p1Hp <= 0) winnerId = battle.p2;
+
+            // server.js 内 handleBattleType の勝敗判定部分
+            if (winnerId) {
+                battle.active = false;
+                const loserId = (winnerId === battle.p1) ? battle.p2 : battle.p1;
+
+                // 🏆 勝者と敗北者のプレイヤーオブジェクトを取得
+                const winnerPlayer = this.players.get(winnerId);
+                const loserPlayer = this.players.get(loserId);
+
+                if (winnerPlayer && loserPlayer) {
+                    // 1. 敗北者の総質量を計算
+                    let lostMass = 0;
+                    loserPlayer.cells.forEach(cell => {
+                        lostMass += cell.mass;
+                        cell.mass = 0; // 敗北者の細胞を空にする
+                    });
+
+                    // 2. 勝者のメイン細胞（最初の細胞）に質量を加算
+                    if (winnerPlayer.cells.length > 0) {
+                        winnerPlayer.cells[0].mass += lostMass;
+                    }
+
+                    // 3. 敗北者をリセットまたは死亡処理（必要に応じて）
+                    // loserPlayer.cells = []; // 完全に消す場合
+                }
+
+                // クライアントへ結果を通知
+                io.to(battle.p1).emit('battle_end', { winnerId, result: winnerId === battle.p1 ? 'win' : 'lose' });
+                io.to(battle.p2).emit('battle_end', { winnerId, result: winnerId === battle.p2 ? 'win' : 'lose' });
+
+                delete this.battles[battleId];
+            } else {
+                // 💡 更新を通知（これがないと画面が緑に変わらない）
+                io.to(battle.p1).emit('battle_update', battle);
+                io.to(battle.p2).emit('battle_update', battle);
+            }
+        }
     }
 
     // ===== 🛍️ SHOP: BUY GUN（追加）=====
@@ -1245,7 +1478,50 @@ class EnhancedAgarServer {
         };
     }
 
+    // EnhancedAgarServer クラス内に追加する新しいメソッド
+    checkSushiCollisions() {
+        if (this.sushiItems.size === 0) return;
 
+        for (const player of this.players.values()) {
+            if (!player.cells) continue;
+
+            for (const cell of player.cells) {
+                // Map化・gameObjects化したので、削除フラグ(toDelete)を見る方式に変更
+                for (const sushi of this.sushiItems.values()) {
+                    if (sushi.toDelete) continue;
+
+                    const dx = cell.x - sushi.x;
+                    const dy = cell.y - sushi.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < cell.radius + sushi.radius) {
+                        console.log(`🍣 Sushi eaten by ${player.name}`);
+
+                        // 1. 削除フラグを立てる
+                        sushi.toDelete = true;
+
+                        // 2. Mapから削除
+                        this.sushiItems.delete(sushi.id);
+                        this.gameObjects.delete(sushi.id); // gameObjectsからも消す
+
+                        // 3. 即補充
+                        this.createSushiItem();
+
+                        // 4. バトル開始処理
+                        const targets = Array.from(this.players.values())
+                            .filter(p => p.id !== player.id)
+                            .map(p => ({ id: p.id, name: p.name }));
+
+                        if (targets.length > 0) {
+                            io.to(player.id).emit('open_battle_selector', targets);
+                        } else {
+                            io.to(player.id).emit('chat_message', { message: "🍣 相手がいません", type: 'system' });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
 
     addPlayer(socketId, name) {
@@ -1683,6 +1959,8 @@ class EnhancedAgarServer {
 
         this.checkCollisions();
 
+        this.checkSushiCollisions(); // ★これを書き足す！★
+
         this.checkVirusInteractions();
 
         if (this.gameTime - this.lastLeaderboardUpdate > GAME_CONSTANTS.LEADERBOARD_UPDATE_RATE) {
@@ -1735,6 +2013,46 @@ class EnhancedAgarServer {
                 console.log(`👟 SpeedUp item spawned! Total: ${this.speedUpItems.size}/${GAME_CONSTANTS.SPEEDUP_ITEM_MAX_COUNT}`);
             }
             this.lastSpeedUpItemSpawn = now;
+        }
+
+        // 🍣 寿司アイテムの定期スポーン
+        if (now - this.lastSushiSpawn >= GAME_CONSTANTS.SUSHI_ITEM_SPAWN_INTERVAL) {
+            if (this.sushiItems.size < GAME_CONSTANTS.SUSHI_ITEM_MAX_COUNT) {
+                this.createSushiItem();
+            }
+            this.lastSushiSpawn = now;
+        }
+
+
+        // 2. プレイヤーと寿司の衝突判定
+        for (const player of this.players.values()) {
+            if (!player.cells) continue;
+
+            for (const cell of player.cells) {
+                for (let i = this.sushiItems.length - 1; i >= 0; i--) {
+                    const sushi = this.sushiItems[i];
+                    const dx = cell.x - sushi.x;
+                    const dy = cell.y - sushi.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < cell.radius + sushi.radius) {
+                        // 寿司獲得！
+                        this.sushiItems.splice(i, 1);
+                        io.emit('sushi_update', this.sushiItems);
+
+                        // ターゲット選択画面を出すために他のプレイヤーリストを送る
+                        const targets = Array.from(this.players.values())
+                            .filter(p => p.id !== player.id)
+                            .map(p => ({ id: p.id, name: p.name }));
+
+                        // 拾ったプレイヤーに送信
+                        const socket = Array.from(io.sockets.sockets.values()).find(s => s.id === player.id);
+                        if (socket) {
+                            socket.emit('open_battle_selector', targets);
+                        }
+                    }
+                }
+            }
         }
 
         // 🦠 ウイルスの自動スポーン（30秒ごとに15個まで）
@@ -2636,6 +2954,14 @@ class EnhancedAgarServer {
                 type: item.type
             })),
 
+            // 🍣 寿司アイテム（★この部分を追加★）
+            sushiItems: Array.from(this.sushiItems.values()).map(sushi => ({
+                id: sushi.id,
+                x: Math.round(sushi.x * 100) / 100,
+                y: Math.round(sushi.y * 100) / 100,
+                radius: sushi.radius,
+                type: sushi.type
+            })),
 
 
             leaderboard: this.leaderboard,
@@ -2672,6 +2998,22 @@ class EnhancedAgarServer {
                 this.stats.memoryUsage = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
             }
         }, 5000);
+
+        // 🍣 寿司アイテムの自動スポーン(30秒ごと)
+        setInterval(() => {
+            const now = Date.now();
+            const currentSushiCount = this.sushiItems.length;
+            const MAX_SUSHI_COUNT = 10;  // 最大10個まで
+
+            if (currentSushiCount < MAX_SUSHI_COUNT) {
+                const spawnCount = Math.min(1, MAX_SUSHI_COUNT - currentSushiCount);
+                for (let i = 0; i < spawnCount; i++) {
+                    this.createSushiItem();
+                }
+                console.log(`🍣 Sushi item spawned! Total: ${this.sushiItems.length}/${MAX_SUSHI_COUNT}`);
+            }
+        }, 30000);  // 30秒ごと
+
     }
 }
 
@@ -2680,6 +3022,22 @@ const gameServer = new EnhancedAgarServer();
 // Socket.IO処理
 io.on("connection", (socket) => {
     console.log(`🔗 Client connected: ${socket.id}`);
+
+    // .length ではなく .size を使い、送信時は Array.from(...) で配列化する
+    if (gameServer.sushiItems && gameServer.sushiItems.size > 0) {
+        socket.emit('sushi_update', Array.from(gameServer.sushiItems.values()));
+    }
+    // ▲▲▲ 追加ここまで ▲▲▲
+
+    // バトル開始リクエスト
+    socket.on('start_battle', (targetId) => {
+        gameServer.handleStartBattle(socket.id, targetId);
+    });
+
+    // タイピング入力
+    socket.on('battle_type', (data) => {
+        gameServer.handleBattleType(socket.id, data.battleId, data.char);
+    });
 
     socket.on("move_player", (data) => {
         try {
@@ -2728,13 +3086,52 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("eject", (data) => {
-        try {
-            const success = gameServer.handlePlayerEject(socket.id, data || { x: 1, y: 0 });
-        } catch (error) {
-            console.error(`❌ Eject error for ${socket.id}:`, error);
+    // 🎯 質量射出ハンドラー
+    socket.on('eject', (data) => {
+        const player = gameServer.players.get(socket.id);
+        if (!player || !player.cells.length) {
+            console.log(`❌ Eject failed: player ${socket.id} not found or no cells`);
+            return;
+        }
+
+        console.log(`🎯 Eject received from ${socket.id}:`, {
+            mouseX: data.mouseX,
+            mouseY: data.mouseY,
+            cellMass: data.cellMass
+        });
+        // 質量射出処理
+        const ejectableCells = player.cells.filter(cell =>
+            cell.mass >= GAME_CONSTANTS.EJECT_MIN_MASS
+        );
+
+        if (ejectableCells.length === 0) {
+            console.log(`❌ Eject failed: no cells with sufficient mass (need ${GAME_CONSTANTS.EJECT_MIN_MASS}+)`);
+            return;
+        }
+
+        const mainCell = ejectableCells[0];
+
+        // マウス方向の計算
+        const mouseDirection = {
+            x: data.mouseX,
+            y: data.mouseY
+        };
+
+        // 質量射出実行
+        const ejectedMass = mainCell.ejectMass(
+            Math.atan2(data.mouseY - mainCell.y, data.mouseX - mainCell.x),
+            mouseDirection
+        );
+
+        if (ejectedMass) {
+            gameServer.gameObjects.set(ejectedMass.id, ejectedMass);
+            console.log(`✅ Mass ejected successfully! ID: ${ejectedMass.id}, Position: (${ejectedMass.x.toFixed(1)}, ${ejectedMass.y.toFixed(1)})`);
+        } else {
+            console.log(`❌ Failed to create ejected mass`);
         }
     });
+
+
 
     // 🎯 チャットメッセージイベント
     socket.on("chat_message", (data) => {
